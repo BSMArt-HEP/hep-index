@@ -344,3 +344,15 @@ def test_create_mcp_server_registers_four_tools():
         assert tool.description, f"missing LLM-facing description on {tool.name}"
     assert "regex" in tools["search_code"].description.lower()
     assert "example" in tools["read_file"].description.lower()
+
+
+def test_read_file_context_window(two_codebases):
+    out = read_file_impl("physics/kine.py", center=4, before=1, after=1)
+    assert out["offset"] == 3
+    assert [l.split(":")[0] for l in out["content"]] == ["3", "4", "5"]
+
+
+def test_read_file_context_clamps_low(two_codebases):
+    out = read_file_impl("physics/kine.py", center=1, before=5, after=2)
+    assert out["offset"] == 1
+    assert len(out["content"]) <= 8

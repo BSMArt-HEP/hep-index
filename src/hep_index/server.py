@@ -172,7 +172,20 @@ def _registered_roots() -> list[tuple[registry.CodebaseEntry, Path]]:
     return [(e, Path(e.path)) for e in registry.load_registry() if Path(e.path).is_dir()]
 
 
-def read_file_impl(path: str, offset: int = 1, limit: int = 200) -> dict:
+def read_file_impl(path: str, offset: int = 1, limit: int = 200,
+                   center: int | None = None, before: int = 10,
+                   after: int = 10) -> dict:
+    """Read numbered lines from a registered file.
+
+    Two modes:
+      * slice: offset (1-based start line) + limit (capped at 1000)
+      * context window: center=<line> reads [center-before, center+after]
+        (offset/limit are ignored when center is given; clamped to file bounds)
+    """
+    if center is not None:
+        center = max(1, int(center))
+        offset = max(1, center - max(0, int(before)))
+        limit = max(0, int(before)) + max(0, int(after)) + 1
     p = Path(path)
     if p.is_absolute():
         target = p
@@ -274,14 +287,19 @@ def create_mcp_server() -> FastMCP:
         `path` may be absolute or relative to a codebase root (first
         matching root wins). Paths outside every registered root are
         rejected. `offset` is the 1-based start line (default 1); `limit`
-        is the number of lines (default 200, capped at 1000). Returns
+        is the number of lines (default 200, capped at 1000). Alternatively,
+        pass center=<line> (e.g. a line returned by find_symbol or search_code)
+        with before/after (default 10/10) to read a context window around a
+        known line. Returns
         {codebase, rel_path, offset, total_lines, content} where each
         content line is "N: text" with N the absolute line number.
 
         Example: read_file("src/cuts.cxx", offset=40, limit=20) ->
             {"codebase": "ma5@1.1", "rel_path": "src/cuts.cxx", ...,
              "content": ["40: void Cuts::apply() {", "41:   ..."]}
+        Context window: read_file("src/cuts.cxx", center=152, before=5,
+            after=20) -> lines 147-172 (useful for macro expansions).
         """
-        return read_file_impl(path, offset, limit)
+        return read_file_impl(path, offset, limit, center, before, after)
 
     return mcp
