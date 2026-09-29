@@ -1,0 +1,32 @@
+# Curated catalog of fetchable HEP software sources (CONTRACT.md §D2).
+# Only these entries are fetchable via fetch_codebase / `hep-index fetch`.
+# versions lists known-good releases; the LAST one is `latest`.
+
+[madgraph]
+type = "tarball"
+url = "https://launchpad.net/mg5amcnlo/3.0/3.6.x/+download/MG5_aMC_v{version}.tar.gz"
+extract_root = "MG5_aMC_v{version_underscore}"
+versions = ["3.7.0", "3.7.3"]
+recipe = "madgraph"
+notes = "launchpad project is 'mg5amcnlo'; 3.7.x tarballs sit under the 3.6.x series path; no official GitHub mirror"
+
+[madanalysis]
+type = "git"
+url = "https://github.com/MadAnalysis/madanalysis5"
+versions = ["v1.11.1"]
+recipe = "madanalysis"
+notes = "v2.0.4_beta is a dead 2022 beta line — never treat it as latest"
+
+[pythia8]
+type = "tarball"
+url = "https://pythia.org/releases/pythia83/pythia{version_nodot}.tgz"
+extract_root = "pythia{version_nodot}"
+versions = ["8.3.17"]
+notes = "tarball version has no dot; gitlab.com unreachable from some networks"
+
+[delphes]
+type = "git"
+url = "https://github.com/delphes/delphes"
+versions = ["3.5.1"]
+recipe = "delphes"
+notes = "plain X.Y.Z tags"
