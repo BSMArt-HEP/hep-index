@@ -2,11 +2,13 @@
 
 Fixture codebases are built directly on disk; their index.db/meta.json are
 pre-created per the CONTRACT.md schema (indexer.build_index is out of scope
-here). No network: rg/git run locally against tmp_path fixtures.
+here). No network: rg/git run locally against tmp_path fixtures; fetch_codebase
+tests use a file:// git fixture behind a fixture catalog (CONTRACT.md §D4).
 """
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -15,7 +17,9 @@ from pathlib import Path
 import pytest
 
 from hep_index import registry
-from hep_index.server import (create_mcp_server, find_symbol_impl,
+from hep_index.recipes import RECIPES
+from hep_index.server import (create_mcp_server, fetch_codebase_impl,
+                              find_symbol_impl, index_codebase_impl,
                               list_codebases_impl, read_file_impl,
                               search_code_impl)
 
@@ -335,15 +339,23 @@ def test_read_file_missing(two_codebases):
 
 # --------------------------------------------------------------- MCP server wiring
 
-def test_create_mcp_server_registers_four_tools():
+def test_create_mcp_server_registers_six_tools():
     srv = create_mcp_server()
     tools = {t.name: t for t in srv._tool_manager.list_tools()}
     assert set(tools) == {"list_codebases", "search_code", "find_symbol",
-                          "read_file"}
+                          "read_file", "index_codebase", "fetch_codebase"}
     for tool in tools.values():
         assert tool.description, f"missing LLM-facing description on {tool.name}"
     assert "regex" in tools["search_code"].description.lower()
     assert "example" in tools["read_file"].description.lower()
+    # contract docstrings for the two D4 tools
+    assert "No network" in tools["index_codebase"].description
+    assert "prefer fetch_codebase" in tools["index_codebase"].description
+    assert "no arbitrary URLs" in tools["fetch_codebase"].description
+    # discoverability hint appended to every pre-existing tool docstring
+    hint = "list_codebases first; selectors are 'name' (latest) or 'name@version'"
+    for name in ("list_codebases", "search_code", "find_symbol", "read_file"):
+        assert hint in tools[name].description, f"hint missing on {name}"
 
 
 def test_read_file_context_window(two_codebases):
@@ -356,3 +368,132 @@ def test_read_file_context_clamps_low(two_codebases):
     out = read_file_impl("physics/kine.py", center=1, before=5, after=2)
     assert out["offset"] == 1
     assert len(out["content"]) <= 8
+
+
+# -------------------------------------------------------------- index_codebase (D4)
+
+def test_index_codebase_real_ctags(env):
+    src = env / "mysrc"
+    (src / "sub").mkdir(parents=True)
+    (src / "sub" / "mod.py").write_text(
+        "class Collider:\n"
+        "    def run(self):\n"
+        "        return 42\n"
+    )
+    (src / "README").write_text("docs\n")
+
+    out = index_codebase_impl(str(src), "mysrc", "0.1")
+    assert set(out) == {"codebase", "path", "n_files", "n_symbols",
+                        "ctags_used", "git_head"}
+    assert out["codebase"] == "mysrc@0.1"
+    assert out["path"] == str(src)
+    assert out["n_files"] == 2
+    assert out["n_symbols"] >= 1        # ctags present in this env
+    assert out["ctags_used"] is True
+    assert out["git_head"] is None      # not a git repo
+
+    entries = registry.load_registry()
+    assert [e.id for e in entries] == ["mysrc@0.1"]
+    assert entries[0].path == str(src)
+    cache = Path(registry.default_cache_root())
+    assert (cache / "mysrc-0.1" / "index.db").is_file()
+    # indexed through the real pipeline: symbol is findable like any other
+    hits = find_symbol_impl("Collider", codebase="mysrc")
+    assert [(h["name"], h["kind"]) for h in hits] == [("Collider", "class")]
+
+
+def test_index_codebase_recipe_extends_exclude(env):
+    src = env / "rsrc"
+    src.mkdir()
+    (src / "a.py").write_text("x = 1\n")
+    index_codebase_impl(str(src), "rsrc", "1.0",
+                        recipe="delphes", exclude=["extra*"])
+    [entry] = registry.load_registry()
+    assert entry.exclude == RECIPES["delphes"] + ["extra*"]
+
+
+def test_index_codebase_duplicate_refused_mentions_reindex(env):
+    src = env / "dsrc"
+    src.mkdir()
+    (src / "a.py").write_text("x = 1\n")
+    index_codebase_impl(str(src), "dup", "1.0")
+    with pytest.raises(ValueError, match=r"already registered: dup@1.0.*reindex"):
+        index_codebase_impl(str(src), "dup", "1.0")
+    assert len(registry.load_registry()) == 1
+
+
+def test_index_codebase_unknown_recipe_and_missing_dir(env, tmp_path):
+    with pytest.raises(ValueError, match="unknown recipe"):
+        index_codebase_impl(str(tmp_path), "x", "1", recipe="nonexistent")
+    with pytest.raises(FileNotFoundError, match="not a directory"):
+        index_codebase_impl(str(tmp_path / "gone"), "x", "1")
+    assert registry.load_registry() == []
+
+
+# -------------------------------------------------------------- fetch_codebase (D4)
+
+def make_git_repo_with_tags(path: Path, tags: list[str]) -> Path:
+    """Offline clone source: tiny repo, one commit, tagged per arg."""
+    path.mkdir(parents=True)
+    (path / "core.py").write_text("def ignite():\n    pass\n")
+    def git(*args):
+        subprocess.run(["git", "-C", str(path), *args], check=True,
+                       capture_output=True)
+    git("init", "-q", "-b", "main")
+    git("add", "-A")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init")
+    for tag in tags:
+        git("tag", tag)
+    return path
+
+
+@pytest.fixture
+def catalog_env(env, monkeypatch):
+    """Fixture catalog whose git url is a file:// repo; HEP_INDEX_ROOT set."""
+    repo = make_git_repo_with_tags(env / "upstream", ["v1.0", "v2.0"])
+    cat = env / "catalog.toml"
+    cat.write_text(
+        "[toygit]\n"
+        'type = "git"\n'
+        f'url = "{repo.as_uri()}"\n'
+        'versions = ["v1.0", "v2.0"]\n'
+        'recipe = "delphes"\n'
+        'notes = "offline fixture"\n')
+    monkeypatch.setenv("HEP_INDEX_CATALOG", str(cat))
+    monkeypatch.setenv("HEP_INDEX_ROOT", str(env / "root"))
+    return env
+
+
+def test_fetch_codebase_end_to_end_latest_version(catalog_env):
+    out = fetch_codebase_impl("toygit")  # version omitted -> catalog latest
+    assert set(out) == {"codebase", "path", "n_files", "n_symbols",
+                        "ctags_used", "git_head"}
+    assert out["codebase"] == "toygit@v2.0"
+    assert out["path"] == str(Path(os.environ["HEP_INDEX_ROOT"]) / "toygit-v2.0")
+    assert out["n_files"] == 1          # core.py (.git excluded)
+    assert out["n_symbols"] >= 1
+    assert out["ctags_used"] is True
+    assert out["git_head"]
+    [entry] = registry.load_registry()
+    assert entry.exclude == RECIPES["delphes"]   # recipe from catalog entry
+    assert (Path(registry.default_cache_root()) / "toygit-v2.0"
+            / "index.db").is_file()
+
+
+def test_fetch_codebase_explicit_version_and_custom_root(catalog_env, tmp_path):
+    out = fetch_codebase_impl("toygit", version="v1.0",
+                              root=str(tmp_path / "custom"))
+    assert out["codebase"] == "toygit@v1.0"
+    assert out["path"] == str(tmp_path / "custom" / "toygit-v1.0")
+    assert (tmp_path / "custom" / "toygit-v1.0" / "core.py").is_file()
+
+
+def test_fetch_codebase_not_in_catalog(catalog_env):
+    with pytest.raises(ValueError,
+                       match="not in catalog: ghost.*CLI add for local paths"):
+        fetch_codebase_impl("ghost")
+
+
+def test_fetch_codebase_bad_version(catalog_env):
+    with pytest.raises(ValueError, match="unknown version: toygit@9.9"):
+        fetch_codebase_impl("toygit", version="9.9")

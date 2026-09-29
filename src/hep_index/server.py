@@ -6,12 +6,13 @@ MCP tools. The registry is re-read on every call — no startup caching.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import subprocess
 from pathlib import Path
 
-from . import registry
+from . import catalog, fetch, indexer, recipes, registry
 
 try:  # mcp 1.x (CONTRACT.md spelling)
     from mcp.server.fastmcp import FastMCP
@@ -225,6 +226,60 @@ def read_file_impl(path: str, offset: int = 1, limit: int = 200,
         f"path {path!r} is outside every registered codebase root")
 
 
+def index_codebase_impl(path: str, name: str, version: str,
+                        recipe: str | None = None,
+                        exclude: list[str] | None = None) -> dict:
+    """Register a local directory and build its index (CONTRACT.md §D4).
+
+    Local paths only, no network. Refuses a duplicate name@version (rebuild
+    via CLI `hep-index reindex`); unknown recipe -> ValueError. Returns the
+    fetch_and_register stats shape.
+    """
+    abs_path = os.path.abspath(path)
+    if not os.path.isdir(abs_path):
+        raise FileNotFoundError(f"not a directory: {abs_path}")
+    if recipe is not None and recipe not in recipes.RECIPES:
+        raise ValueError(f"unknown recipe: {recipe} "
+                         f"(available: {', '.join(sorted(recipes.RECIPES))})")
+    entry_id = f"{name}@{version}"
+    if any(e.id == entry_id for e in registry.load_registry()):
+        raise ValueError(
+            f"already registered: {entry_id} — use 'hep-index reindex"
+            f" {entry_id}' to rebuild its index")
+    entry = registry.CodebaseEntry(
+        name=name, version=version, path=abs_path,
+        exclude=(recipes.RECIPES[recipe] if recipe else []) + (exclude or []))
+    registry.add_entry(entry)
+    stats = indexer.build_index(entry)
+    return {"codebase": entry.id, "path": abs_path,
+            "n_files": stats.n_files, "n_symbols": stats.n_symbols,
+            "ctags_used": stats.ctags_used, "git_head": stats.git_head}
+
+
+def fetch_codebase_impl(name: str, version: str | None = None,
+                        root: str | None = None) -> dict:
+    """Fetch a catalog entry via fetch.fetch_and_register (CONTRACT.md §D4).
+
+    Catalog-gated only: unknown name -> ValueError pointing at
+    `hep-index catalog` / CLI add; version defaults to the catalog latest and
+    must be listed in entry.versions (render_url enforces this).
+    """
+    cat = catalog.load_catalog()
+    if name not in cat:
+        raise ValueError(f"not in catalog: {name} — run hep-index catalog; "
+                         f"use CLI add for local paths")
+    entry = cat[name]
+    version = version or catalog.latest(entry)
+    dest_root = (Path(root).expanduser() if root else
+                 Path(os.environ.get("HEP_INDEX_ROOT",
+                                     "~/hep-codebases")).expanduser())
+    return fetch.fetch_and_register(
+        name=name, version=version, kind=entry.type,
+        url=catalog.render_url(entry, version),
+        extract_root=catalog.render_extract_root(entry, version),
+        root=dest_root, recipe=entry.recipe)
+
+
 def create_mcp_server() -> FastMCP:
     mcp = FastMCP("hep-index")
 
@@ -240,6 +295,8 @@ def create_mcp_server() -> FastMCP:
         Example: list_codebases() ->
             [{"name": "madanalysis", "version": "1.11.1", "id":
               "madanalysis@1.11.1", "path": "/srv/MA5", "ok": true, ...}]
+
+        If unsure which codebases are indexed, call list_codebases first; selectors are 'name' (latest) or 'name@version'.
         """
         return list_codebases_impl()
 
@@ -258,6 +315,8 @@ def create_mcp_server() -> FastMCP:
         Example: search_code("class\\s+Analysis", glob="*.h") ->
             [{"codebase": "ma5@1.1", "path": "/srv/ma5/Analysis.h",
               "line_no": 12, "text": "class Analysis { ..."}]
+
+        If unsure which codebases are indexed, call list_codebases first; selectors are 'name' (latest) or 'name@version'.
         """
         return search_code_impl(query, codebase, glob, max_results)
 
@@ -277,6 +336,8 @@ def create_mcp_server() -> FastMCP:
         Example: find_symbol("Kinematics", codebase="atlas", kind="class") ->
             [{"codebase": "atlas@1.0", "name": "Kinematics",
               "kind": "class", "path": "/srv/atlas/kine.py", "line": 3, ...}]
+
+        If unsure which codebases are indexed, call list_codebases first; selectors are 'name' (latest) or 'name@version'.
         """
         return find_symbol_impl(name, codebase, kind, max_results)
 
@@ -299,7 +360,50 @@ def create_mcp_server() -> FastMCP:
              "content": ["40: void Cuts::apply() {", "41:   ..."]}
         Context window: read_file("src/cuts.cxx", center=152, before=5,
             after=20) -> lines 147-172 (useful for macro expansions).
+
+        If unsure which codebases are indexed, call list_codebases first; selectors are 'name' (latest) or 'name@version'.
         """
         return read_file_impl(path, offset, limit, center, before, after)
+
+    @mcp.tool()
+    def index_codebase(path: str, name: str, version: str,
+                       recipe: str | None = None,
+                       exclude: list[str] | None = None) -> dict:
+        """Index a directory tree already on this machine. No network. For known
+        HEP packages prefer fetch_codebase.
+
+        `path` must be an existing local directory (absolute, or relative to
+        the server's working directory). `name` + `version` form the id
+        "name@version"; a duplicate id is refused — rebuild it with the CLI
+        command `hep-index reindex <name>@<version>` instead. `recipe`
+        applies a preset exclude list (madgraph, madanalysis, delphes);
+        `exclude` adds extra glob patterns on top. Returns
+        {codebase, path, n_files, n_symbols, ctags_used, git_head}.
+
+        Example: index_codebase("/srv/mycode", "mycode", "1.0",
+                                recipe="delphes") ->
+            {"codebase": "mycode@1.0", "n_files": 123,
+             "n_symbols": 456, "ctags_used": true, ...}
+        """
+        return index_codebase_impl(path, name, version, recipe, exclude)
+
+    @mcp.tool()
+    def fetch_codebase(name: str, version: str | None = None,
+                       root: str | None = None) -> dict:
+        """Fetch a catalog package from its pinned upstream source and index it.
+        Only curated catalog entries are fetchable — no arbitrary URLs.
+
+        `name` must be a catalog entry (see `hep-index catalog`);
+        `version` defaults to the catalog's latest known-good version and
+        must be one it lists. `root` overrides the destination root
+        (default ~/hep-codebases). Recipe excludes are applied
+        automatically from the catalog entry. Returns
+        {codebase, path, n_files, n_symbols, ctags_used, git_head}.
+
+        Example: fetch_codebase("pythia8") ->
+            {"codebase": "pythia8@8.3.17",
+             "path": "/home/me/hep-codebases/pythia8-8317", ...}
+        """
+        return fetch_codebase_impl(name, version, root)
 
     return mcp
