@@ -65,3 +65,23 @@ def test_remove(env):
     assert load_registry() == []
     with pytest.raises(KeyError):
         remove_entry("madanalysis")
+
+
+def test_resolve_error_lists_available(env):
+    add_entry(_entry(env, name="madanalysis", version="1.11.1"))
+    add_entry(_entry(env, name="delphes", version="3.5.1"))
+    # name@version branch
+    with pytest.raises(KeyError, match="available:") as exc:
+        resolve("madgraph@3.7.0")
+    assert "not registered: 'madgraph@3.7.0'" in str(exc.value)
+    assert "available: delphes@3.5.1, madanalysis@1.11.1" in str(exc.value)  # sorted
+    # bare-name branch
+    with pytest.raises(KeyError, match="available:") as exc:
+        resolve("madgraph")
+    assert "not registered: 'madgraph'" in str(exc.value)
+    assert "available: delphes@3.5.1, madanalysis@1.11.1" in str(exc.value)
+
+
+def test_resolve_error_empty_registry(env):
+    with pytest.raises(KeyError, match=r"\(available: none\)"):
+        resolve("madgraph")

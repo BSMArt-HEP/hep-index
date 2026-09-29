@@ -99,6 +99,11 @@ def _version_key(v: str) -> list[tuple[int, object]]:
             for tok in v.replace("-", ".").split(".")]
 
 
+def _available(entries: list[CodebaseEntry]) -> str:
+    ids = sorted(e.id for e in entries)
+    return ", ".join(ids) if ids else "none"
+
+
 def resolve(selector: str | None, path: Path | None = None) -> list[CodebaseEntry]:
     """selector None -> all entries; 'name@version' -> that entry;
     'name' -> latest registered version of name. KeyError if unknown."""
@@ -110,10 +115,10 @@ def resolve(selector: str | None, path: Path | None = None) -> list[CodebaseEntr
         for e in entries:
             if e.name == name and e.version == ver:
                 return [e]
-        raise KeyError(f"not registered: {selector}")
+        raise KeyError(f"not registered: '{selector}' (available: {_available(entries)})")
     same_name = [e for e in entries if e.name == selector]
     if not same_name:
-        raise KeyError(f"not registered: {selector}")
+        raise KeyError(f"not registered: '{selector}' (available: {_available(entries)})")
     return [sorted(same_name, key=lambda e: _version_key(e.version))[-1]]
 
 
