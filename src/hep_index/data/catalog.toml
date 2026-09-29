@@ -170,3 +170,38 @@ type = "git"
 url = "https://github.com/SpeysideHEP/spey.git"
 versions = ["v0.2.7"]
 notes = "statistical backend inside Contur and MA5 v1.11+; tiny repo"
+
+[bsmart]
+category = "model-builder"
+type = "git"
+url = "https://github.com/bsmart-hep/core.git"
+versions = ["main"]
+notes = "BSMArt 2.0 — no versioned refs exist: main IS the release; the git_head recorded at index time is the pin ('hep-index list' shows stale when upstream moves); pip-installable for use, catalog fetch is for source navigation; project site goodsell.pages.in2p3.fr/bsmart; tagging releases would let the catalog pin properly"
+
+[feyncalc]
+category = "symbolic-toolkit"
+type = "git"
+url = "https://github.com/FeynCalc/feyncalc.git"
+versions = ["Release-10_2_1"]
+notes = "tags named Release-X_Y_Z (underscores); stable line on branch hotfix-stable; FeynCalc 10 pairs with its patched FeynArts (InstallFeynCalc fetches both)"
+
+[sym2int]
+category = "model-builder"
+type = "tarball"
+url = "https://renatofonseca.net/sym2int/ProgramVersions/Sym2Int-{version}.zip"
+versions = ["2.4"]
+notes = "author-site zip; archive is FLAT (Sym2Int.m + README at root, no top dir) — fetch creates the dest dir as container; requires GroupMath; renatofonseca.net/sym2int is official (github HEPcodes mirrors are stale/unofficial)"
+
+[susyno]
+category = "model-builder"
+type = "tarball"
+url = "https://renatofonseca.net/susyno/ProgramVersions/Susyno-{version}.zip"
+versions = ["3.7"]
+notes = "author-site zip with top dir Susyno/; 2-loop RGEs for generic SUSY models; HEPcodes/Susyno github is a stale 2015 unofficial mirror — not used"
+
+[groupmath]
+category = "symbolic-toolkit"
+type = "tarball"
+url = "https://renatofonseca.net/groupmath/ProgramVersions/GroupMath-{version}.zip"
+versions = ["1.1.3"]
+notes = "Lie/permutation-group math library required by Sym2Int; author-site zip with top dir GroupMath/"

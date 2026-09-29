@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from hep_index import fetch, registry
+from hep_index.fetch import fetch_source
 from hep_index.recipes import RECIPES
 
 
@@ -199,3 +200,37 @@ def test_no_catalog_import():
     """fetch.py is primitives-only: no catalog import, ever (CONTRACT)."""
     assert not re.search(r"^\s*(from|import)\s+.*catalog",
                          Path(fetch.__file__).read_text(), re.M)
+
+
+# ------------------------------------------------------------------- v0.3: zip + flat archives
+
+def _make_zip(path, members: dict):
+    import zipfile
+    with zipfile.ZipFile(path, "w") as zf:
+        for name, content in members.items():
+            zf.writestr(name, content)
+
+
+def test_fetch_tarball_zip_with_top_dir(env, tmp_path):
+    zb = tmp_path / "pkg.zip"
+    _make_zip(zb, {"Pkg-1.0/src.m": "f[x_] := x\n"})
+    dest = fetch_source(kind="tarball", url=zb.as_uri(), version="1.0",
+                        dest=tmp_path / "out")
+    assert (dest / "src.m").read_text().startswith("f[x_]")
+
+
+def test_fetch_tarball_flat_zip(env, tmp_path):
+    zb = tmp_path / "flat.zip"
+    _make_zip(zb, {"Sym2Int.m": "prog[] := 1\n", "README": "hi"})
+    dest = fetch_source(kind="tarball", url=zb.as_uri(), version="2.4",
+                        dest=tmp_path / "out")
+    assert (dest / "Sym2Int.m").exists() and (dest / "README").exists()
+
+
+def test_fetch_zip_slip_rejected(env, tmp_path):
+    zb = tmp_path / "evil.zip"
+    _make_zip(zb, {"../escape.m": "boom"})
+    with pytest.raises(ValueError, match="unsafe zip members"):
+        fetch_source(kind="tarball", url=zb.as_uri(), version="1",
+                     dest=tmp_path / "out")
+    assert not (tmp_path / "escape.m").exists()

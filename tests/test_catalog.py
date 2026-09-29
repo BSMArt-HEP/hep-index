@@ -22,7 +22,7 @@ def packaged(monkeypatch):
 
 def test_packaged_catalog_entries(packaged):
     assert {"madgraph", "madanalysis", "pythia8", "delphes"} <= set(packaged)
-    assert len(packaged) >= 22
+    assert len(packaged) >= 27
     assert packaged["madgraph"].versions == ["3.5.16", "3.7.0", "3.7.3", "3.8.0"]
     assert packaged["madanalysis"].type == "git"
     assert packaged["pythia8"].recipe is None

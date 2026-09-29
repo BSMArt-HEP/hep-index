@@ -11,6 +11,7 @@ import subprocess
 import tarfile
 import tempfile
 import urllib.request
+import zipfile
 from pathlib import Path
 
 from hep_index import indexer, recipes, registry
@@ -26,6 +27,23 @@ GIT_ENV = {
 def _as_url(url: str) -> str:
     """Plain local paths (tests) -> file:// URLs for urllib.request."""
     return url if "://" in url else Path(url).resolve().as_uri()
+
+
+def _extract_archive(archive: Path, staging: Path) -> None:
+    """Extract a tar or zip archive into staging (zip-slip guarded)."""
+    with open(archive, "rb") as fh:
+        magic = fh.read(4)
+    if magic == b"PK\x03\x04":
+        with zipfile.ZipFile(archive) as zf:
+            bad = [n for n in zf.namelist()
+                   if n.startswith(("/", "\\")) or ".." in Path(n).parts]
+            if bad:
+                raise ValueError(f"unsafe zip members: {bad[:3]}")
+        with zipfile.ZipFile(archive) as zf:
+            zf.extractall(staging)
+    else:
+        with tarfile.open(archive, "r:*") as tar:
+            tar.extractall(staging, filter="data")
 
 
 def _fail(dest: Path, detail: str) -> RuntimeError:
@@ -63,15 +81,20 @@ def fetch_source(*, kind: str, url: str, version: str, dest: Path,
                 tmp.flush()
                 staging = Path(tempfile.mkdtemp(prefix="hep-fetch-"))
                 try:
-                    with tarfile.open(tmp.name, "r:*") as tar:
-                        tar.extractall(staging, filter="data")
+                    _extract_archive(Path(tmp.name), staging)
                     top = Path(staging) / extract_root if extract_root else None
                     if top is None:
                         entries = sorted(staging.iterdir())
-                        if len(entries) != 1 or not entries[0].is_dir():
-                            raise _fail(dest, "archive has no single top-level"
-                                        " dir; pass extract_root")
-                        top = entries[0]
+                        if len(entries) == 1 and entries[0].is_dir():
+                            top = entries[0]
+                        elif entries:
+                            # flat archive (no top dir): dest becomes the container
+                            dest.mkdir(parents=True, exist_ok=True)
+                            for e in entries:
+                                shutil.move(str(e), str(dest / e.name))
+                            return dest
+                        else:
+                            raise _fail(dest, "archive is empty")
                     if not top.is_dir():
                         raise _fail(dest, f"extract_root missing in archive:"
                                     f" {extract_root}")
