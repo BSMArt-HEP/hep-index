@@ -1,33 +1,172 @@
 # Curated catalog of fetchable HEP software sources (CONTRACT.md §D2).
 # Only these entries are fetchable via fetch_codebase / `hep-index fetch`.
 # versions lists known-good releases; the LAST one is `latest`.
+# Every URL was machine-verified (curl HEAD / git ls-remote) on 2026-09-30.
+# Full landscape map incl. Tier-2/3 and excluded packages: docs/HEP_SOFTWARE_MAP.md
 
 [madgraph]
+category = "me-generator"
 type = "tarball"
 url = "https://launchpad.net/mg5amcnlo/3.0/3.6.x/+download/MG5_aMC_v{version}.tar.gz"
-urls = { "3.7.3" = "https://launchpad.net/mg5amcnlo/3.0/3.7.x/+download/MG5_aMC_v{version}.tar.gz" }
+urls = { "3.5.16" = "https://launchpad.net/mg5amcnlo/3.0/3.5.x/+download/MG5_aMC_v3.5.16.tar.gz", "3.7.3" = "https://launchpad.net/mg5amcnlo/3.0/3.7.x/+download/MG5_aMC_v3.7.3.tar.gz", "3.8.0" = "https://launchpad.net/mg5amcnlo/3.0/3.8.x/+download/MG5_aMC_v3.8.0.tar.gz" }
 extract_root = "MG5_aMC_v{version_underscore}"
-versions = ["3.7.0", "3.7.3"]
+versions = ["3.5.16", "3.7.0", "3.7.3", "3.8.0"]
 recipe = "madgraph"
-notes = "launchpad project is 'mg5amcnlo'; series path is per-release metadata, NOT mechanical (3.7.0 sits under 3.6.x, 3.7.3 under 3.7.x) — hence the urls override; no official GitHub mirror"
+notes = "launchpad project 'mg5amcnlo'; series path is per-release metadata, NOT mechanical (3.7.0 under 3.6.x!) — hence urls overrides; 3.5.x = LTS line; official git mirror exists at github.com/mg5amcnlo/mg5amcnlo (tags vX.Y.Z)"
 
 [madanalysis]
+category = "analysis-framework"
 type = "git"
 url = "https://github.com/MadAnalysis/madanalysis5"
 versions = ["v1.11.1"]
 recipe = "madanalysis"
-notes = "v2.0.4_beta is a dead 2022 beta line — never treat it as latest"
+notes = "v2.0.4_beta is a dead 2022 beta line — never treat it as latest; tags carry the v prefix"
 
 [pythia8]
+category = "parton-shower"
 type = "tarball"
 url = "https://pythia.org/releases/pythia83/pythia{version_nodot}.tgz"
 extract_root = "pythia{version_nodot}"
-versions = ["8.3.17"]
-notes = "tarball version has no dot; gitlab.com unreachable from some networks"
+versions = ["8.3.17", "8.3.18"]
+notes = "tarball version has no dot (pythia8318.tgz); gitlab.com/Pythia8/releases has per-release branches pythia8XXX; pip 'pythia8mc' is official; Vincia ships inside since 8.300 (no separate entry needed)"
 
 [delphes]
+category = "detector-sim"
 type = "git"
 url = "https://github.com/delphes/delphes"
 versions = ["3.5.1"]
 recipe = "delphes"
-notes = "plain X.Y.Z tags"
+notes = "plain X.Y.Z tags (no v prefix)"
+
+[spheno]
+category = "spectrum-calc"
+type = "tarball"
+url = "https://spheno.hepforge.org/downloads/?f=SPheno-{version}.tar.gz"
+versions = ["4.0.7"]
+notes = "no official git (github.com/restrepo/SPheno is a stale unofficial mirror); hepforge PAGES are Anubis-walled but direct ?f= tarball URLs fetch fine; conda-forge 'spheno' exists"
+
+[sarah]
+category = "model-builder"
+type = "tarball"
+url = "https://sarah.hepforge.org/downloads/?f=SARAH-{version}.tar.gz"
+versions = ["4.15.2"]
+notes = "plain .m/.wl text tree (indexable); 4.15.2 is FlexibleSUSY's pin — mirror SARAH.m says 4.15.4, changelog unreachable (Anubis); no official git (restrepo/SARAH is unofficial)"
+
+[feynrules]
+category = "model-builder"
+type = "git"
+url = "https://github.com/FeynRules/FeynRules.git"
+versions = ["fr-2.3.49"]
+notes = "official author org; tags are fr-X.Y.Z on branch feynrules-current; UFO production line for MadGraph/MadDM"
+
+[flexiblesusy]
+category = "spectrum-calc"
+type = "git"
+url = "https://github.com/FlexibleSUSY/FlexibleSUSY.git"
+versions = ["v2.9.0"]
+notes = "expects a SARAH tarball at configure time (fetch gives you the meta-codegen templates, not a build)"
+
+[softsusy]
+category = "spectrum-calc"
+type = "git"
+url = "https://github.com/BAllanach/softsusy.git"
+versions = ["v4.1.22"]
+notes = "moved hepforge -> author GitHub; tags stop at v4.1.22 (a research pass claimed 4.1.24 — does not exist, verified)"
+
+[maddm]
+category = "dark-matter"
+type = "git"
+url = "https://github.com/maddmhep/maddm.git"
+versions = ["v3.2.13"]
+notes = "MG5_aMC plugin — index alongside madgraph; 3.3.x is explicitly beta/rc, do not catalog"
+
+[calchep]
+category = "me-generator"
+type = "tarball"
+url = "https://theory.sinp.msu.ru/~pukhov/CALCHEP/calchep_{version}.tgz"
+versions = ["3.9.2"]
+notes = "author's personal MSU page, no official git; the calculation kernel bundled inside micrOMEGAs; .mdl model files are the navigation target"
+
+[micromegas]
+category = "dark-matter"
+type = "tarball"
+url = "https://micromegasdm.github.io/downloadarea/v7.1/micromegas_{version}.tgz"
+versions = ["7.1.10"]
+notes = "site front door lapth.cnrs.fr/micromegas (old lapth.in2p3.fr domain dead); actual tarballs on micromegasdm.github.io downloadarea; v7.1 dir literal in path — new minor series needs a urls override"
+
+[higgstools]
+category = "validation"
+type = "git"
+url = "https://gitlab.com/higgsbounds/higgstools.git"
+versions = ["v1.3"]
+notes = "active successor of HiggsBounds-5 + HiggsSignals-2 (both frozen 2021, on the same gitlab group if ever needed); navigate this for 2026-era Higgs constraints"
+
+[sherpa]
+category = "me-generator"
+type = "git"
+url = "https://gitlab.com/sherpa-team/sherpa.git"
+versions = ["v3.0.5"]
+notes = "moved hepforge -> gitlab.com/sherpa-team; rel-a-b-c branches carry backports; WARNING: PyPI 'sherpa' is an unrelated CIAO statistics package"
+
+[herwig]
+category = "parton-shower"
+type = "tarball"
+url = "https://herwig.hepforge.org/downloads/Herwig-{version}.tar.gz"
+versions = ["7.3.0"]
+notes = "gitlab.com/herwig/herwig is auth-walled (private) — tarball is the fetchable canonical; ThePEG dependency not included; hepforge pages Anubis-walled, direct file URLs fine"
+
+[rivet]
+category = "validation"
+type = "git"
+url = "https://gitlab.com/hepcedar/rivet.git"
+versions = ["rivet-4.1.4"]
+notes = "cedar suite moved hepforge SVN -> gitlab.com/hepcedar; tags rivet-X.Y.Z; src/Analyses/ is the physics payload; conda-forge 'rivet' exists but analyses are fullest in git"
+
+[yoda]
+category = "analysis-framework"
+type = "git"
+url = "https://gitlab.com/hepcedar/yoda.git"
+versions = ["yoda-2.1.4"]
+notes = "released in lockstep with rivet 4.1.x (YODA 2.x broke API vs 1.x — keep majors aligned)"
+
+[contur]
+category = "recast-engine"
+type = "git"
+url = "https://gitlab.com/hepcedar/contur.git"
+versions = ["contur-3.1.5"]
+notes = "BSM-in-Rivet reinterpretation engine; needs matching rivet/yoda versions (3.1.5 <-> rivet 4.1.4 / yoda 2.1.4); pip 'contur' exists; runs MG5+Pythia+Rivet internally"
+
+[lhapdf]
+category = "pdf"
+type = "git"
+url = "https://gitlab.com/hepcedar/lhapdf.git"
+versions = ["lhapdf-6.5.6"]
+notes = "git repo is small — PDF set DATA (GBs) is fetched separately by 'lhapdf install'; never mirror the data dir"
+
+[checkmate]
+category = "recast-engine"
+type = "git"
+url = "https://github.com/CheckMATE2/checkmate2.git"
+versions = ["v2.5.4"]
+notes = "large repo (~290 MB git) — fetch does a shallow clone; hepforge site dead; beware unrelated GitHub 'Checkmate' monitoring tool; v2.5.4 adds pyhf/HS3 statistical models"
+
+[smodels]
+category = "recast-engine"
+type = "git"
+url = "https://github.com/SModelS/smodels.git"
+versions = ["3.2.0"]
+notes = "tags are X.Y.Z WITHOUT v prefix; 3.2.0 breaks database-format compat (ONNN surrogates); pip 'smodels' exists but theory/database parsers are fullest in git"
+
+[pyhf]
+category = "stat-interpretation"
+type = "git"
+url = "https://github.com/scikit-hep/pyhf.git"
+versions = ["v0.7.6"]
+notes = "pip 'pyhf' is the install path; catalog fetch is for source navigation (likelihood kernels, JSON schema)"
+
+[spey]
+category = "stat-interpretation"
+type = "git"
+url = "https://github.com/SpeysideHEP/spey.git"
+versions = ["v0.2.7"]
+notes = "statistical backend inside Contur and MA5 v1.11+; tiny repo"

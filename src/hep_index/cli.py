@@ -82,17 +82,20 @@ def _cmd_reindex(args: argparse.Namespace) -> int:
 
 def _cmd_catalog(args: argparse.Namespace) -> int:
     cat = catalog.load_catalog()
+    if args.category:
+        cat = {n: e for n, e in cat.items()
+               if e.category == args.category}
     if not cat:
-        print("catalog is empty")
+        print("no matching catalog entries")
         return 0
     for entry in cat.values():
         versions = ", ".join(
             v + (" (latest)" if v == entry.versions[-1] else "")
             for v in entry.versions)
         note = entry.notes.splitlines()[0] if entry.notes else ""
-        print(f"{entry.name:<12} {entry.type:<8} {versions}")
+        print(f"{entry.name:<13} {entry.category:<18} {entry.type:<8} {versions}")
         if note:
-            print(f"{'':<12} note: {note}")
+            print(f"{'':<13} note: {note}")
     return 0
 
 
@@ -149,6 +152,8 @@ def _build_parser() -> _Parser:
     p.set_defaults(func=_cmd_reindex)
 
     p = sub.add_parser("catalog", help="list curated fetchable sources")
+    p.add_argument("--category", metavar="CAT",
+                   help="filter by category (e.g. me-generator, recast-engine)")
     p.set_defaults(func=_cmd_catalog)
 
     p = sub.add_parser("fetch", help="fetch a catalog package and index it")

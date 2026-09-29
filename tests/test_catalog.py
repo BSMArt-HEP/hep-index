@@ -7,7 +7,7 @@ from hep_index.catalog import (CatalogEntry, default_catalog_path, latest,
                                load_catalog, render_extract_root, render_url)
 
 EXPECTED_URLS = {
-    "madgraph": "https://launchpad.net/mg5amcnlo/3.0/3.6.x/+download/MG5_aMC_v3.7.0.tar.gz",
+    "madgraph": "https://launchpad.net/mg5amcnlo/3.0/3.5.x/+download/MG5_aMC_v3.5.16.tar.gz",
     "madanalysis": "https://github.com/MadAnalysis/madanalysis5",
     "pythia8": "https://pythia.org/releases/pythia83/pythia8317.tgz",
     "delphes": "https://github.com/delphes/delphes",
@@ -20,12 +20,13 @@ def packaged(monkeypatch):
     return load_catalog()
 
 
-def test_packaged_catalog_has_four_entries(packaged):
-    assert set(packaged) == {"madgraph", "madanalysis", "pythia8", "delphes"}
-    assert packaged["madgraph"].versions == ["3.7.0", "3.7.3"]
+def test_packaged_catalog_entries(packaged):
+    assert {"madgraph", "madanalysis", "pythia8", "delphes"} <= set(packaged)
+    assert len(packaged) >= 22
+    assert packaged["madgraph"].versions == ["3.5.16", "3.7.0", "3.7.3", "3.8.0"]
     assert packaged["madanalysis"].type == "git"
     assert packaged["pythia8"].recipe is None
-    assert packaged["delphes"].notes == "plain X.Y.Z tags"
+    assert packaged["delphes"].notes.startswith("plain X.Y.Z tags")
 
 
 def test_default_path_env_override(tmp_path, monkeypatch):
@@ -68,14 +69,14 @@ def test_render_extract_root(packaged):
 
 
 def test_latest(packaged):
-    assert latest(packaged["madgraph"]) == "3.7.3"
-    assert latest(packaged["pythia8"]) == "8.3.17"
+    assert latest(packaged["madgraph"]) == "3.8.0"
+    assert latest(packaged["pythia8"]) == "8.3.18"
 
 
 def test_unknown_version_error(packaged):
     with pytest.raises(ValueError, match="unknown version: madgraph@9.9.9"):
         render_url(packaged["madgraph"], "9.9.9")
-    with pytest.raises(ValueError, match=r"available: 3\.7\.0, 3\.7\.3"):
+    with pytest.raises(ValueError, match=r"available: 3\.5\.16, 3\.7\.0, 3\.7\.3, 3\.8\.0"):
         render_extract_root(packaged["madgraph"], "9.9.9")
 
 
@@ -90,3 +91,18 @@ def test_render_url_override():
     u3 = render_url(cat["madgraph"], "3.7.3")
     assert "/3.6.x/+download/MG5_aMC_v3.7.0.tar.gz" in u0
     assert "/3.7.x/+download/MG5_aMC_v3.7.3.tar.gz" in u3
+
+
+def test_catalog_categories_present():
+    cat = load_catalog()
+    assert cat["madgraph"].category == "me-generator"
+    assert cat["rivet"].category == "validation"
+    assert cat["spheno"].category == "spectrum-calc"
+    assert len(cat) >= 22
+
+
+def test_new_entry_urls_render():
+    cat = load_catalog()
+    assert "SPheno-4.0.7.tar.gz" in render_url(cat["spheno"], "4.0.7")
+    assert "pythia8318.tgz" in render_url(cat["pythia8"], "8.3.18")
+    assert "3.8.x" in render_url(cat["madgraph"], "3.8.0")

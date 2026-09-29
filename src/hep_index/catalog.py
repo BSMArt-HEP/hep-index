@@ -20,6 +20,7 @@ class CatalogEntry:
     type: str                      # "tarball" | "git"
     url: str                       # template URL (see _template_vars)
     versions: list[str]            # known-good versions, latest LAST
+    category: str = ""             # me-generator | parton-shower | detector-sim | ...
     recipe: str | None = None      # recipes.RECIPES key applied on fetch
     extract_root: str | None = None  # tarball top-level dir template (None = git)
     notes: str = ""                # why this source/version was pinned
@@ -39,7 +40,12 @@ def load_catalog(path: Path | None = None) -> dict[str, CatalogEntry]:
     """Parse the catalog TOML into entries keyed by name (KeyError on unknown name)."""
     path = path or default_catalog_path()
     data = tomllib.loads(path.read_text())
-    return {name: CatalogEntry(name=name, **table) for name, table in data.items()}
+    entries: dict[str, CatalogEntry] = {}
+    for name, table in data.items():
+        table = dict(table)
+        table.setdefault("type", "tarball")
+        entries[name] = CatalogEntry(name=name, **table)
+    return entries
 
 
 def latest(entry: CatalogEntry) -> str:
