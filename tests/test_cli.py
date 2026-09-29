@@ -1,5 +1,6 @@
 """Tests for the CLI (real ctags, no network; see CONTRACT.md §cli)."""
 import json
+import subprocess
 import sqlite3
 
 import pytest
@@ -174,3 +175,53 @@ def test_reindex_rebuilds(env, root, capsys):
 def test_reindex_unknown_exits_2(env, capsys):
     assert main(["reindex", "ghost"]) == 2
     assert capsys.readouterr().err.startswith("error:")
+
+
+# ---------------------------------------------------------------- v0.2: catalog/fetch/footer
+
+def test_catalog_listing(env, capsys):
+    rc = main(["catalog"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "madgraph" in out and "tarball" in out and "3.7.0" in out
+    assert "(latest)" in out and "note:" in out
+
+
+def test_fetch_not_in_catalog(env, capsys):
+    rc = main(["fetch", "nosuchpkg"])
+    assert rc == 1
+    assert "not in catalog" in capsys.readouterr().err
+
+
+def _fixture_catalog(tmp_path, git_repo):
+    cat = tmp_path / "catalog.toml"
+    cat.write_text(
+        f'[fixture]\ntype = "git"\nurl = "{git_repo.as_uri()}"\n'
+        'versions = ["v1.0"]\nrecipe = "madanalysis"\n')
+    return cat
+
+
+def test_fetch_e2e_offline(env, tmp_path, capsys, monkeypatch):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "mod.py").write_text("def hello():\n    return 42\n")
+    subprocess.run(["git", "init", "-q"], cwd=src, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=src, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-qm", "x"], cwd=src, check=True)
+    subprocess.run(["git", "tag", "v1.0"], cwd=src, check=True)
+    monkeypatch.setenv("HEP_INDEX_CATALOG", str(_fixture_catalog(tmp_path, src)))
+    root = tmp_path / "roots"
+    monkeypatch.setenv("HEP_INDEX_ROOT", str(root))
+    rc = main(["fetch", "fixture"])
+    out = capsys.readouterr().out
+    assert rc == 0 and "registered fixture@v1.0" in out
+    assert (root / "fixture-v1.0" / "mod.py").exists()
+    assert any(e.id == "fixture@v1.0" for e in registry.load_registry())
+
+
+def test_bare_invocation_footer(env, capsys):
+    rc = main([])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "usage:" in out and "registered:" in out

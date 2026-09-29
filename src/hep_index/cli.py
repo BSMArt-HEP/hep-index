@@ -10,8 +10,9 @@ import json
 import os
 import shutil
 import sys
+from pathlib import Path
 
-from . import indexer, registry
+from . import catalog, fetch, indexer, registry
 from .recipes import RECIPES
 from .server import create_mcp_server, list_codebases_impl
 
@@ -79,6 +80,42 @@ def _cmd_reindex(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_catalog(args: argparse.Namespace) -> int:
+    cat = catalog.load_catalog()
+    if not cat:
+        print("catalog is empty")
+        return 0
+    for entry in cat.values():
+        versions = ", ".join(
+            v + (" (latest)" if v == entry.versions[-1] else "")
+            for v in entry.versions)
+        note = entry.notes.splitlines()[0] if entry.notes else ""
+        print(f"{entry.name:<12} {entry.type:<8} {versions}")
+        if note:
+            print(f"{'':<12} note: {note}")
+    return 0
+
+
+def _cmd_fetch(args: argparse.Namespace) -> int:
+    name, version = _split_selector(args.selector)
+    cat = catalog.load_catalog()
+    if name not in cat:
+        raise ValueError(f"not in catalog: {name} — run 'hep-index catalog'; "
+                         "use CLI add for local paths")
+    entry = cat[name]
+    version = version or catalog.latest(entry)
+    root = (Path(args.root).expanduser() if args.root else
+            Path(os.environ.get("HEP_INDEX_ROOT", "~/hep-codebases")).expanduser())
+    stats = fetch.fetch_and_register(
+        name=name, version=version, kind=entry.type,
+        url=catalog.render_url(entry, version),
+        extract_root=catalog.render_extract_root(entry, version),
+        root=root, recipe=entry.recipe, exclude=list(args.exclude))
+    print(f"registered {stats['codebase']}: {stats['n_files']} files, "
+          f"{stats['n_symbols']} symbols, head {_short_head(stats['git_head'])}")
+    return 0
+
+
 def _cmd_serve(args: argparse.Namespace) -> int:
     create_mcp_server().run()
     return 0
@@ -111,6 +148,17 @@ def _build_parser() -> _Parser:
     p.add_argument("selector", metavar="name[@version]")
     p.set_defaults(func=_cmd_reindex)
 
+    p = sub.add_parser("catalog", help="list curated fetchable sources")
+    p.set_defaults(func=_cmd_catalog)
+
+    p = sub.add_parser("fetch", help="fetch a catalog package and index it")
+    p.add_argument("selector", metavar="name[@version]")
+    p.add_argument("--root", metavar="DIR",
+                   help="destination root (default HEP_INDEX_ROOT or ~/hep-codebases)")
+    p.add_argument("--exclude", action="append", default=[], metavar="GLOB",
+                   help="extra exclude glob, repeatable")
+    p.set_defaults(func=_cmd_fetch)
+
     p = sub.add_parser("serve", help="run the MCP server (stdio)")
     p.set_defaults(func=_cmd_serve)
     return parser
@@ -118,6 +166,16 @@ def _build_parser() -> _Parser:
 
 def main(argv: list[str] | None = None) -> int:
     try:
+        if argv is None:
+            argv = sys.argv[1:]
+        if not argv:  # bare invocation: help + registered-coverage footer
+            _build_parser().print_help()
+            try:
+                ids = ", ".join(e.id for e in registry.load_registry()) or "none"
+                print(f"\nregistered: {ids} (see 'hep-index list')")
+            except Exception:
+                pass
+            return 0
         args = _build_parser().parse_args(argv)
         return args.func(args)
     except (_UsageError, ValueError, FileNotFoundError) as exc:
