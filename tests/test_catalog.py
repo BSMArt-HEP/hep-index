@@ -82,3 +82,11 @@ def test_unknown_version_error(packaged):
 def test_unknown_entry_error(packaged):
     with pytest.raises(KeyError):
         packaged["nobody"]
+
+
+def test_render_url_override():
+    cat = load_catalog()
+    u0 = render_url(cat["madgraph"], "3.7.0")
+    u3 = render_url(cat["madgraph"], "3.7.3")
+    assert "/3.6.x/+download/MG5_aMC_v3.7.0.tar.gz" in u0
+    assert "/3.7.x/+download/MG5_aMC_v3.7.3.tar.gz" in u3

@@ -5,10 +5,11 @@
 [madgraph]
 type = "tarball"
 url = "https://launchpad.net/mg5amcnlo/3.0/3.6.x/+download/MG5_aMC_v{version}.tar.gz"
+urls = { "3.7.3" = "https://launchpad.net/mg5amcnlo/3.0/3.7.x/+download/MG5_aMC_v{version}.tar.gz" }
 extract_root = "MG5_aMC_v{version_underscore}"
 versions = ["3.7.0", "3.7.3"]
 recipe = "madgraph"
-notes = "launchpad project is 'mg5amcnlo'; 3.7.x tarballs sit under the 3.6.x series path; no official GitHub mirror"
+notes = "launchpad project is 'mg5amcnlo'; series path is per-release metadata, NOT mechanical (3.7.0 sits under 3.6.x, 3.7.3 under 3.7.x) — hence the urls override; no official GitHub mirror"
 
 [madanalysis]
 type = "git"
