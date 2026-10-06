@@ -13,42 +13,55 @@ It is deliberately **not** RAG: no embeddings, no vector store — ripgrep +
 ctags/sqlite symbol indexes over the real trees, live-read. Symbol-level lookup
 works across C++, Python, Fortran and (via search) Mathematica.
 
-## Install
+## Install (consumers)
+
+Zero-install, straight from the git remote (pin a tag for reproducibility — SSH
+key required for private repos):
 
 ```bash
-git clone <remote> hep-index && cd hep-index
-uv sync
+# one-shot use
+uvx --from git+ssh://github.com/<org>/hep-index.git@v0.3.0 hep-index list
+
+# or install persistently (isolated venv, `hep-index` on PATH)
+uv tool install git+ssh://github.com/<org>/hep-index.git@v0.3.0
+hep-index list
 ```
 
 Requirements: `uv`, Python ≥ 3.11, `ripgrep` (required for search),
 `universal-ctags` (optional — without it you get degraded manifest-only indexes).
+Updates: `uv tool upgrade hep-index`.
 
 ## Quickstart
 
 ```bash
 # fetch + index a curated package (MadAnalysis 5, pinned upstream)
-uv run hep-index fetch madanalysis
+hep-index fetch madanalysis
 
 # or index something already on disk, e.g. your project's MG5 install
-uv run hep-index add ~/recast/read/madgraph --name madgraph --version 3.7.0 --recipe madgraph
+hep-index add ~/recast/read/madgraph --name madgraph --version 3.7.0 --recipe madgraph
 
-uv run hep-index list          # what's indexed, staleness, git heads
-uv run hep-index catalog       # 29 curated sources w/ categories + gotcha notes
+hep-index list          # what's indexed, staleness, git heads
+hep-index catalog       # 29 curated sources w/ categories + gotcha notes
 ```
 
 Serve it to an agent harness (stdio MCP):
 
 ```bash
-uv run hep-index serve
+hep-index serve
 ```
 
-MCP wiring (any MCP-JSON client; adjust syntax to your harness):
+MCP wiring (any MCP-JSON client; adjust syntax to your harness). Preferred —
+zero-install via uvx, pinned tag:
 
 ```json
 {"mcpServers": {"hep-index": {
-  "command": "uv", "args": ["run", "--project", "/path/to/hep-index", "hep-index", "serve"]
+  "command": "uvx", "args": ["--from", "git+ssh://github.com/<org>/hep-index.git@v0.3.0",
+                             "hep-index", "serve"]
 }}}
 ```
+
+Dev alternative (runs the live checkout): `"command": "uv", "args": ["run",
+"--project", "/path/to/hep-index", "hep-index", "serve"]`.
 
 ## Tools exposed
 
@@ -92,7 +105,10 @@ redistributed; each machine fetches from upstream.
 ## Development
 
 ```bash
+git clone git@github.com:<org>/hep-index.git && cd hep-index
+uv sync
 uv run pytest        # 91 tests, offline (file:// fixtures)
+uv run hep-index …   # CLI from the live checkout
 ```
 
 Architecture and binding interface contracts live in `CONTRACT.md`; the
