@@ -175,8 +175,8 @@ notes = "statistical backend inside Contur and MA5 v1.11+; tiny repo"
 category = "model-builder"
 type = "git"
 url = "https://github.com/bsmart-hep/core.git"
-versions = ["main"]
-notes = "BSMArt 2.0 — no versioned refs exist: main IS the release; the git_head recorded at index time is the pin ('hep-index list' shows stale when upstream moves); pip-installable for use, catalog fetch is for source navigation; project site goodsell.pages.in2p3.fr/bsmart; tagging releases would let the catalog pin properly"
+versions = ["v2.0.2"]
+notes = "BSMArt 2.0 (Goodsell, Romão et al.) — GitHub releases carry vX.Y.Z tags; pip-installable for use, catalog fetch is for source navigation; project site goodsell.pages.in2p3.fr/bsmart"
 
 [feyncalc]
 category = "symbolic-toolkit"
@@ -205,3 +205,12 @@ type = "tarball"
 url = "https://renatofonseca.net/groupmath/ProgramVersions/GroupMath-{version}.zip"
 versions = ["1.1.3"]
 notes = "Lie/permutation-group math library required by Sym2Int; author-site zip with top dir GroupMath/"
+
+[feynmaster]
+category = "model-builder"
+type = "tarball"
+url = "https://porthos.tecnico.ulisboa.pt/FeynMaster/download-Linux.php"
+urls = { "2.1.4" = "https://porthos.tecnico.ulisboa.pt/FeynMaster/Download/OldVersions/FM-Linux-2.1.4.tar.gz" }
+extract_root = "FeynMaster"
+versions = ["2.1.4", "2.2.0"]
+notes = "no git repo - php endpoint streams the LATEST release (2.2.0 today, moving target: re-fetch to refresh, no staleness tracking without git); OldVersions/ has immutable FM-Linux-X.Y.Z.tar.gz up to 2.1.4 (per-version override); Mac/Windows endpoints exist alongside download-Linux.php; payloads are gzip without Content-Encoding (fetch handles transparently)"
