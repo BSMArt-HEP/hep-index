@@ -20,10 +20,10 @@ key required for private repos):
 
 ```bash
 # one-shot use
-uvx --from git+ssh://github.com/<org>/hep-index.git@v0.3.0 hep-index list
+uvx --from git+ssh://git@github.com/BSMArt-HEP/hep-index.git@v0.3.0 hep-index list
 
 # or install persistently (isolated venv, `hep-index` on PATH)
-uv tool install git+ssh://github.com/<org>/hep-index.git@v0.3.0
+uv tool install git+ssh://git@github.com/BSMArt-HEP/hep-index.git@v0.3.0
 hep-index list
 ```
 
@@ -55,7 +55,7 @@ zero-install via uvx, pinned tag:
 
 ```json
 {"mcpServers": {"hep-index": {
-  "command": "uvx", "args": ["--from", "git+ssh://github.com/<org>/hep-index.git@v0.3.0",
+  "command": "uvx", "args": ["--from", "git+ssh://git@github.com/BSMArt-HEP/hep-index.git@v0.3.0",
                              "hep-index", "serve"]
 }}}
 ```
@@ -161,7 +161,7 @@ scratch, version is latest-LAST stable, notes name the hosting gotcha, and
 ## Development
 
 ```bash
-git clone git@github.com:<org>/hep-index.git && cd hep-index
+git clone git@github.com:BSMArt-HEP/hep-index.git && cd hep-index
 uv sync
 uv run pytest        # 91 tests, offline (file:// fixtures)
 uv run hep-index …   # CLI from the live checkout
