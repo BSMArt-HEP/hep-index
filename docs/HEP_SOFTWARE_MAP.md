@@ -1,6 +1,7 @@
 # HEP software landscape map — hep-index catalog research
 
-Generated 2026-09-30 by three parallel researcher agents (lanes A/B/C), then
+Generated 2026-09-30 by three parallel AI researcher agents (lanes A/B/C) with
+human review of the outcome, then
 machine-verified by the maintainer (curl HEAD / git ls-remote): every URL, tag
 and version in catalog.toml was confirmed live. Discrepancies found and fixed:
 SoftSUSY tags stop at v4.1.22 (claimed 4.1.24 does not exist); Herwig git is
