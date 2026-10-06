@@ -3,6 +3,7 @@ name = "hep-index"
 version = "0.1.0"
 description = "Multi-codebase index for HEP software, served over MCP"
 requires-python = ">=3.11"
+license = "MIT"
 dependencies = ["mcp>=1.2", "tomli-w>=1.0"]
 
 [dependency-groups]

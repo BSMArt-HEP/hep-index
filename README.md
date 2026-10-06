@@ -102,14 +102,7 @@ gotchas (dead tags, launchpad series-path quirks, Anubis walls) as commented
 TOML — contributions welcome via PR. Codebases themselves are never bundled or
 redistributed; each machine fetches from upstream.
 
-## AI-assistance disclaimer
 
-This codebase was developed with substantial AI assistance: implementation,
-tests, and the HEP-software landscape research were produced by LLM agents
-(GLM models, orchestrated via the pi coding agent) working from
-human-authored interface contracts, with human review of every change. Upstream
-packages referenced in the catalog are the work of their respective authors and
-are only pinned, never redistributed.
 
 ## Extending the catalog
 
@@ -177,3 +170,17 @@ uv run hep-index …   # CLI from the live checkout
 Architecture and binding interface contracts live in `CONTRACT.md`; the
 full HEP-software landscape map (incl. Tier-2/3 packages not yet catalogued)
 in `docs/HEP_SOFTWARE_MAP.md`.
+
+## AI-assistance disclaimer
+
+This codebase was developed with substantial AI assistance: implementation,
+tests, and the HEP-software landscape research were produced by LLM agents
+(GLM models, orchestrated via the pi coding agent) working from
+human-authored interface contracts, with human review of every change. Upstream
+packages referenced in the catalog are the work of their respective authors and
+are only pinned, never redistributed.
+## License
+
+MIT — Copyright (c) 2026 Miguel Crispim Romão. Catalog entries pin upstream
+software by other authors; their licenses apply to their code, which is never
+redistributed here.
