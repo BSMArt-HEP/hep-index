@@ -201,7 +201,7 @@ scratch, version is latest-LAST stable, notes name the hosting gotcha, and
 ```bash
 git clone git@github.com:BSMArt-HEP/hep-index.git && cd hep-index
 uv sync
-uv run pytest        # 120 tests, offline (file:// fixtures)
+uv run pytest        # 133 tests, offline (file:// fixtures)
 uv run hep-index …   # CLI from the live checkout
 ```
 
