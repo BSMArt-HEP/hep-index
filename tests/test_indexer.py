@@ -57,7 +57,9 @@ def test_index_files_schema_symbols_excludes(entry, env):
     con = _db(entry)
     tables = dict(con.execute(
         "SELECT name, sql FROM sqlite_master WHERE type='table'").fetchall())
-    assert set(tables) == {"symbols", "files"}
+    assert set(tables) == {"symbols", "files", "py_api", "py_modules",
+                           "py_imports", "py_keys", "py_calls", "data_files",
+                           "data_keys"}
     cols = {t: [r[1] for r in con.execute(f"PRAGMA table_info({t})")]
             for t in tables}
     assert cols["symbols"] == ["name", "kind", "path", "line", "language",
@@ -96,14 +98,16 @@ def test_index_files_schema_symbols_excludes(entry, env):
 def test_degraded_mode_missing_ctags(entry, env):
     stats = build_index(entry, ctags_bin="/nonexistent/ctags")
     assert stats.ctags_used is False
-    assert stats.n_symbols == 0
+    # no C++ symbols, but Python still comes from the ast pass
+    assert stats.n_symbols == 2
     con = _db(entry)
-    assert con.execute("SELECT COUNT(*) FROM symbols").fetchone()[0] == 0
+    assert {r[0] for r in con.execute("SELECT name FROM symbols")} == \
+        {"alpha", "Beta"}
     assert con.execute("SELECT COUNT(*) FROM files").fetchone()[0] == 3
     con.close()
     meta = json.loads((index_dir(entry) / "meta.json").read_text())
     assert meta["ctags_used"] is False
-    assert meta["n_symbols"] == 0
+    assert meta["n_symbols"] == 2
 
 
 def test_stats_fields_git(entry, env):
@@ -157,3 +161,18 @@ def test_rerun_wipes_cleanly(entry, env):
 def test_default_excludes_constant():
     assert DEFAULT_EXCLUDES == [".git", "__pycache__", "*.pyc", "node_modules",
                                 "*.o", "*.so", "*.a", "build", "dist"]
+
+
+def test_ctags_skips_data_languages(env):
+    root = env / "data"
+    root.mkdir()
+    (root / "cfg.json").write_text('{"Setup": {"Points": 10, "Cores": 2}}\n')
+    (root / "notes.md").write_text("# Heading\n\n## Section\n")
+    (root / "model.m").write_text("f[x_] := x^2;\n")       # Mathematica
+    (root / "k.cpp").write_text("void kernel() {}\n")
+    entry = CodebaseEntry(name="data", version="1", path=str(root))
+    build_index(entry)
+    con = _db(entry)
+    langs = {r[0] for r in con.execute("SELECT DISTINCT language FROM symbols")}
+    con.close()
+    assert langs == {"C++"}

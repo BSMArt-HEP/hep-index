@@ -11,7 +11,14 @@ stack at once.
 
 It is deliberately **not** RAG: no embeddings, no vector store — ripgrep +
 ctags/sqlite symbol indexes over the real trees, live-read. Symbol-level lookup
-works across C++, Python, Fortran and (via search) Mathematica.
+works across C++, Python, Fortran and (via search) Mathematica. Python is
+indexed with the stdlib `ast` module (static, nothing imported), giving
+qualified names, full signatures, docstrings, inheritance, re-exports,
+`self.x` instance attributes and config-key lookups; files that don't parse
+(e.g. Python 2) fall back to ctags. ctags is not run on data/markup formats
+(JSON, YAML, XML, Markdown, …) or on `.m` files (Mathematica in HEP; ctags
+would misparse them as MatLab/Objective-C). JSON/YAML/TOML files are instead
+flattened into key paths with value types and samples.
 
 ## Install (consumers)
 
@@ -69,10 +76,25 @@ Dev alternative (runs the live checkout): `"command": "uv", "args": ["run",
 |---|---|
 | `list_codebases()` | registered codebases, counts, git heads, staleness |
 | `search_code(query, codebase?, glob?, max?)` | ripgrep (regex) across all/selected codebases, labeled hits |
-| `find_symbol(name, codebase?, kind?)` | ctags/sqlite symbol lookup → definitions w/ file:line |
+| `find_symbol(name, codebase?, kind?)` | symbol lookup → definitions w/ file:line; Python hits carry qualname, signature, docstring summary, bases; dotted names (`pkg.mod.Class.meth`, re-exports like `pkg.Name`) resolve through imports |
+| `call_graph(name, codebase?, direction?)` | static Python call graph: what a function/method/class calls and who calls it, targets resolved through imports, re-exports, base classes and `self.attr = Ctor()` attribute types (so `self.RunManager.run_batch()` → `HEPRun.run_batch`); unresolvable `x.meth()` calls listed separately as possible callers |
+| `config_keys(base?, codebase?, prefix?, data_prefix?)` | input-key schema: every `cfg["A"]["B"]` / `.get("B", default)` / `"B" in cfg["A"]` chain in the Python, merged with the key paths of the codebase's JSON/YAML/TOML example inputs — per key: defaults, consuming functions, example values, and status `read+set` / `read_only` / `set_only` (likely dead option or typo) |
+| `data_files(codebase?, glob?, has_key?)` | list JSON/YAML/TOML files (example inputs, templates) with top-level keys; `has_key="Codes/SModelS"` finds every example configuring SModelS. Files ≤64 kB are stored whole, so `read_file` serves them even without the checkout |
+| `outline(target, codebase?, include_private?)` | Python package/module/class API without reading source: members + signatures + summaries, submodules, re-exports, `__all__`, subclasses, full literal settings dicts |
 | `read_file(path, offset?, limit?)` | numbered lines; or `center=/before=/after=` context window |
 | `index_codebase(path, name, version)` | agent may index a **local** dir (no network) |
 | `fetch_codebase(name, version?)` | agent may fetch a **catalog** package (curated URLs only) |
+
+Without MCP (shell-only agents, scripts, skills), the same read-only tools run
+from the CLI and print JSON:
+
+```bash
+hep-index query                                    # list tools + signatures
+hep-index query outline --doc                      # full tool description
+hep-index query outline bsmart.core.Scan           # positionals fill required params
+hep-index query config_keys inputs prefix=Setup    # param=value, JSON-parsed
+hep-index query call_graph run_batch direction=callers codebase=bsmart
+```
 
 Wrong selector names self-correct: `KeyError: not registered: 'madgrap' (available: …)`.
 

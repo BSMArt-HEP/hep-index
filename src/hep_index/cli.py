@@ -1,4 +1,4 @@
-"""Command-line interface (CONTRACT.md §cli): add/remove/list/reindex/serve.
+"""Command-line interface (CONTRACT.md §cli): add/remove/list/reindex/serve/query.
 
 Exit codes: 0 ok, 1 usage/ValueError/FileNotFoundError, 2 KeyError (unknown
 codebase). Errors print "error: <msg>" to stderr.
@@ -6,6 +6,7 @@ codebase). Errors print "error: <msg>" to stderr.
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import os
 import shutil
@@ -14,7 +15,21 @@ from pathlib import Path
 
 from . import catalog, fetch, indexer, registry
 from .recipes import RECIPES
+from . import server
 from .server import create_mcp_server, list_codebases_impl
+
+# `hep-index query <tool>`: the read-only MCP tools, same impls, JSON out —
+# for agents/harnesses without MCP (e.g. skills calling it from a shell).
+QUERY_TOOLS = {
+    "list_codebases": server.list_codebases_impl,
+    "search_code": server.search_code_impl,
+    "find_symbol": server.find_symbol_impl,
+    "read_file": server.read_file_impl,
+    "outline": server.outline_impl,
+    "call_graph": server.call_graph_impl,
+    "config_keys": server.config_keys_impl,
+    "data_files": server.data_files_impl,
+}
 
 
 class _UsageError(Exception):
@@ -119,6 +134,61 @@ def _cmd_fetch(args: argparse.Namespace) -> int:
     return 0
 
 
+def _query_value(text: str):
+    """JSON when it parses (numbers, true/false/null, lists), else the string."""
+    try:
+        return json.loads(text)
+    except ValueError:
+        return text
+
+
+def _sig(fn) -> str:
+    return str(inspect.signature(fn)).replace("'", "")
+
+
+def _cmd_query(args: argparse.Namespace) -> int:
+    if args.tool in (None, "list") or args.tool not in QUERY_TOOLS:
+        if args.tool not in (None, "list"):
+            print(f"error: unknown tool {args.tool!r}", file=sys.stderr)
+        descs = {}
+        try:
+            descs = {t.name: t.description for t in
+                     create_mcp_server()._tool_manager.list_tools()}
+        except Exception:
+            pass
+        for name, fn in QUERY_TOOLS.items():
+            first = (descs.get(name) or fn.__doc__ or "").strip().splitlines()
+            print(f"{name}{_sig(fn)}\n    {first[0] if first else ''}")
+        print("\nusage: hep-index query TOOL [POSITIONAL ...] [param=value ...]"
+              "\n       hep-index query TOOL --doc   (full description)")
+        return 0 if args.tool in (None, "list") else 1
+    fn = QUERY_TOOLS[args.tool]
+    if args.help_tool:
+        try:
+            desc = {t.name: t.description for t in
+                    create_mcp_server()._tool_manager.list_tools()}[args.tool]
+        except Exception:
+            desc = fn.__doc__ or ""
+        print(f"{args.tool}{_sig(fn)}\n\n{inspect.cleandoc(desc)}")
+        return 0
+    params = list(inspect.signature(fn).parameters)
+    kwargs: dict = {}
+    positional = []
+    for a in args.args:
+        key, eq, val = a.partition("=")
+        if eq and key in params:
+            kwargs[key] = _query_value(val)
+        else:
+            positional.append(a)  # positional values stay strings
+    free = [p for p in params if p not in kwargs]
+    if len(positional) > len(free):
+        raise ValueError(f"too many positional arguments for {args.tool}; "
+                         f"parameters: {', '.join(params)}")
+    kwargs.update(zip(free, positional))
+    print(json.dumps(fn(**kwargs), indent=1, ensure_ascii=False))
+    return 0
+
+
 def _cmd_serve(args: argparse.Namespace) -> int:
     create_mcp_server().run()
     return 0
@@ -166,6 +236,15 @@ def _build_parser() -> _Parser:
 
     p = sub.add_parser("serve", help="run the MCP server (stdio)")
     p.set_defaults(func=_cmd_serve)
+
+    p = sub.add_parser("query", help="run a read-only MCP tool, print JSON"
+                       " (no tool: list them)")
+    p.add_argument("tool", nargs="?", metavar="TOOL")
+    p.add_argument("args", nargs="*", metavar="ARG",
+                   help="positional values, or param=value (JSON-parsed)")
+    p.add_argument("--help-tool", "--doc", dest="help_tool", action="store_true",
+                   help="print the tool's full description")
+    p.set_defaults(func=_cmd_query)
     return parser
 
 

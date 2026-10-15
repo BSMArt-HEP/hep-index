@@ -35,17 +35,59 @@ Behavior:
       + index on `name`, index on `path`
     - `files(path TEXT, size INTEGER, language TEXT)`
       (`path` values are RELATIVE to entry.path, posix separators)
+    - `py_api(qualname TEXT, name TEXT, kind TEXT, path TEXT, line INTEGER,
+      end_line INTEGER, parent TEXT, signature TEXT, doc TEXT, bases TEXT,
+      decorators TEXT, value TEXT)` + indexes on qualname, parent, (path, line).
+      kind ∈ module|class|function|method|variable|attribute|instance_attribute
+      (`self.x` assigned in a method; __init__ first; doc "Set in <m>()."); bases/decorators
+      are JSON lists; value = full source of a literal constant >60 chars (≤4000).
+    - `py_modules(module TEXT, path TEXT, all_names TEXT)` (all_names: JSON
+      list or null) + index on module
+    - `py_imports(module TEXT, name TEXT, target TEXT, line INTEGER)` (local
+      binding → absolute dotted target; relative imports resolved; `*` for
+      star imports) + index on (module, name)
+    - `py_keys(base TEXT, raw_base TEXT, keys TEXT, access TEXT, dflt TEXT,
+      scope TEXT, path TEXT, line INTEGER)` + index on base — one row per
+      maximal string-key lookup chain; base = receiver with `self.`/`cls.`
+      stripped, raw_base as written; keys JSON list ("*" = non-constant key);
+      access ∈ index|get|in|set|del; dflt = `.get()` default source; scope =
+      enclosing qualname. Function-local aliases (`s = cfg["A"]`; `s["B"]`)
+      are recorded as base cfg, keys A/B.
+    - `py_calls(caller TEXT, callee TEXT, name TEXT, target TEXT, path TEXT,
+      line INTEGER)` + indexes on caller, target, name — one row per distinct
+      (callee, line) inside each indexed function/method (nested defs count
+      for the enclosing one) or module-level code. callee as written
+      (`self.RunManager.run_batch`, `super().run`); name = last component;
+      target = resolved qualname or external dotted name ("numpy.array"), ""
+      if unknown. Resolution (indexer._canonical_calls): file-local imports
+      and defs, then re-exports across files; `self.m()` climbs resolved base
+      classes; `self.a.m()` types `a` from a `self.a = Ctor(...)` /
+      class-level `a = Ctor(...)` in the class or its bases.
+    - `data_files(path TEXT, format TEXT, size INTEGER, top_keys TEXT,
+      truncated INTEGER, content TEXT)` + index on path — every .json/.yaml/
+      .yml/.toml ≤2 MB that parses (datafiles.py); content stored when ≤64 kB
+      else NULL; truncated=1 when MAX_PATHS (5000) key paths was hit
+    - `data_keys(path TEXT, keys TEXT, types TEXT, samples TEXT)` + index on
+      path — one row per (file, nested key path), containers included; list
+      elements are "*"; types/samples JSON lists (≤3 samples, ≤80 chars)
   - `meta.json` = IndexStats fields (snake_case keys) + `"entry_id": "<name>@<version>"`
 - File manifest via `os.walk` honoring DEFAULT_EXCLUDES + `entry.exclude`
   (fnmatch-style globs matched against paths relative to root, and against
   directory/file names).
 - Symbols via Universal Ctags run from the tree root:
-  `ctags -R --output-format=json --fields=+n+k+s+l --extras=-F --exclude=<glob>`
+  `ctags -R --output-format=json --fields=+n+k+s+l --extras=-F
+   --languages=-JSON,-Yaml,... --exclude=<glob>` (CTAGS_SKIP_LANGUAGES,
+  filtered against `ctags --list-languages` so unknown names never abort ctags)
   (pass DEFAULT_EXCLUDES + entry.exclude as repeatable --exclude).
   ctags `path` field → relative posix path; `line`, `kind`, `language`, `name`,
   `signature` straight from the JSON records. If `ctags` binary is missing
   (FileNotFoundError / shutil.which fails): symbols table empty, `ctags_used=False`,
   no exception.
+- Python (see pyast.py): every `.py` file ≤2 MB that `ast.parse`s is
+  extracted statically; its ctags rows are REPLACED by ast rows in `symbols`
+  (`name, kind, path, line, "Python", signature`, module rows excluded) and it
+  populates py_api/py_modules/py_imports. Unparseable files keep ctags rows.
+  The ast pass runs even when ctags is missing.
 - Insert rows sorted (deterministic). Language for files table: suffix map
   (.py→Python, .cpp/.h/.cc/.hpp→C++, .f90/.f→Fortran, .m→Mathematica, else "").
 
@@ -77,8 +119,41 @@ def read_file_impl(path: str, offset: int = 1, limit: int = 200) -> dict
 - `find_symbol_impl` — per resolved entry: open its index.db; exact `name = ?`
   first, then substring `name LIKE '%..%'` if no exact hits; optional `kind`
   filter. Result `{codebase, name, kind, path (absolute), line, language, signature}`.
+  Python rows found in py_api are returned enriched with `qualname`,
+  `summary` (docstring first paragraph), and `bases`/`decorators`/`value`
+  when non-empty. A dotted `name` is first resolved against py_api qualnames
+  (exact, following py_imports re-exports, then `%.name` suffix).
   Fallback when index.db missing or n_symbols == 0: rg word search
   `\b<name>\b` and return hits as `{codebase, path (absolute), line_no, text}`.
+- `outline_impl(target, codebase=None, include_private=False, max_members=200)`
+  → list (one per codebase with a match) of `{codebase, qualname, kind, path,
+  line, signature, doc, members[...]}` + modules: `imports`, `__all__`,
+  `reexports`, packages: `submodules`; classes: `bases`, `subclasses`
+  (name-based). target = dotted name / re-export / unique suffix / relative
+  file path. No match anywhere → KeyError. Indexes without py_api are skipped.
+- `config_keys_impl(base=None, codebase=None, prefix=None, include_data=True,
+  data_prefix=None, max_results=200)` — base None & no prefix →
+  `[{codebase, base, n_uses, n_key_paths, written_as}]` ranked by use; base
+  None & prefix → data-file schema only `[{codebase, keys, data}]`; else rows
+  for that base (self./cls. stripped) whose keys prefix-match ("*" either
+  side): `{codebase, keys, accesses{access: n}, defaults, n_uses,
+  locations[<=3]}`. With include_data, data_keys rows whose top key the code
+  reads (or, with data_prefix, rows under that mount re-keyed relative to
+  it) are merged: `data{n_files, files[<=3], types, values[<=5]}`, optional
+  `read_via` (most specific covering code path: exact-with-wildcards, code
+  reads beneath it, code reads its list, or code path ends in "*"), and
+  `status` ∈ read+set | read_only | set_only | pattern. Sorted by keys.
+- `call_graph_impl(name, codebase=None, direction="both", max_results=50)` →
+  per definition (dotted: resolved/suffix; bare: name match, ≤10; kinds
+  function|method|class|module): `{codebase, qualname, kind, path, line,
+  signature, calls[{callee, target?, line, n}], called_by[{caller, callee,
+  path, line}]}`, methods also `possible_callers` + `n_possible_callers`
+  (`*.name` calls with no resolvable target). direction ∈ both|calls|callers
+  (else ValueError); no match → KeyError.
+- `data_files_impl(codebase=None, glob=None, has_key=None, max_results=100)` →
+  `{codebase, path, rel_path, format, size, stored, top_keys, truncated?}`.
+- `read_file_impl` falls back to data_files.content when the disk read fails
+  (missing checkout/file); result then carries `source: "index"`.
 - `read_file_impl` — `path` absolute, or relative (resolved against each
   registered root, first match wins). MUST be inside a registered root
   (`Path.resolve()` + `is_relative_to`) else ValueError (path traversal guard).
@@ -96,7 +171,14 @@ hep-index remove <name>[@version]
 hep-index list [--json]
 hep-index reindex <name>[@version]
 hep-index serve
+hep-index query [TOOL [POSITIONAL ...] [param=value ...]] [--doc]
 ```
+
+`query` runs the read-only tool impls (list_codebases, search_code,
+find_symbol, read_file, outline, call_graph, config_keys, data_files) and
+prints JSON; positionals fill the not-yet-given parameters in order (as
+strings), `param=value` values are JSON-parsed when possible. No TOOL lists
+tools; `--doc` prints the MCP description. Unknown tool → exit 1.
 
 - `add`: abspath, merge recipe excludes (recipe glob list EXTENDS --exclude),
   registry.add_entry, indexer.build_index; print one-line stats

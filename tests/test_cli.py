@@ -225,3 +225,35 @@ def test_bare_invocation_footer(env, capsys):
     out = capsys.readouterr().out
     assert rc == 0
     assert "usage:" in out and "registered:" in out
+
+
+def test_query_tools(env, tmp_path, capsys):
+    src = tmp_path / "qsrc"
+    (src / "pkg").mkdir(parents=True)
+    (src / "pkg" / "__init__.py").write_text("")
+    (src / "pkg" / "core.py").write_text(
+        "class Scan:\n    def run(self, n: int = 3):\n        return n\n")
+    (src / "ex.json").write_text('{"Setup": {"Points": 4}}')
+    assert main(["add", str(src), "--name", "q", "--version", "1"]) == 0
+    capsys.readouterr()
+    assert main(["query", "outline", "pkg.core.Scan"]) == 0
+    [o] = json.loads(capsys.readouterr().out)
+    assert o["qualname"] == "pkg.core.Scan"
+    assert [m["name"] for m in o["members"]] == ["run"]
+    # positional fills required params in order; param=value is JSON-parsed
+    assert main(["query", "find_symbol", "run", "kind=method",
+                 "max_results=1"]) == 0
+    [hit] = json.loads(capsys.readouterr().out)
+    assert hit["signature"] == "(self, n: int = 3)"
+    assert main(["query", "data_files", "has_key=Setup/Points"]) == 0
+    assert [f["rel_path"] for f in json.loads(capsys.readouterr().out)] == \
+        ["ex.json"]
+    # listing / per-tool docs / errors
+    assert main(["query"]) == 0
+    out = capsys.readouterr().out
+    assert "call_graph(" in out and "index_codebase" not in out
+    assert main(["query", "outline", "--doc"]) == 0
+    assert "API outline" in capsys.readouterr().out
+    assert main(["query", "nope"]) == 1
+    assert main(["query", "outline", "pkg.nope"]) == 2       # KeyError
+    assert main(["query", "outline", "a", "b", "c", "d", "e"]) == 1

@@ -138,6 +138,104 @@ def _rg_word_search(root: Path, name: str, limit: int) -> list[tuple[str, int, s
     return hits
 
 
+# ------------------------------------------------------------- python ast layer
+
+_API_COLS = ("qualname, name, kind, path, line, end_line, parent, signature,"
+             " doc, bases, decorators, value")
+
+
+def _py_con(entry: registry.CodebaseEntry) -> sqlite3.Connection | None:
+    """Open index.db if it carries the py_api tables (older indexes don't)."""
+    db_path = registry.index_dir(entry) / "index.db"
+    if not db_path.exists():
+        return None
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+    if con.execute("SELECT 1 FROM sqlite_master WHERE type='table'"
+                   " AND name='py_api'").fetchone() is None:
+        con.close()
+        return None
+    return con
+
+
+def _summary(doc: str) -> str:
+    """First paragraph of a docstring, joined onto one line."""
+    lines = [ln for ln in doc.strip().splitlines()
+             if ln.strip(" -=*#~_") or not ln.strip()]  # drop banner rules
+    para = "\n".join(lines).strip().split("\n\n", 1)[0]
+    return " ".join(para.split())
+
+
+def _is_private(name: str) -> bool:
+    return name.startswith("_") and not (name.startswith("__")
+                                         and name.endswith("__"))
+
+
+def _api_by_qualname(con, qualname: str, kind: str | None = None) -> list:
+    kfilter = " AND kind = ?" if kind else ""
+    return con.execute(f"SELECT {_API_COLS} FROM py_api WHERE qualname = ?"
+                       f"{kfilter} ORDER BY path, line",
+                       [qualname] + ([kind] if kind else [])).fetchall()
+
+
+def _resolve_dotted(con, dotted: str, kind: str | None = None,
+                    depth: int = 0) -> list:
+    """Exact qualname, else follow imports/re-exports (pkg.Name -> pkg.core.Name)."""
+    rows = _api_by_qualname(con, dotted, kind)
+    if rows or depth > 6:
+        return rows
+    parts = dotted.split(".")
+    for i in range(len(parts) - 1, 0, -1):
+        mod, local, rest = ".".join(parts[:i]), parts[i], parts[i + 1:]
+        imp = con.execute("SELECT target FROM py_imports WHERE module = ?"
+                          " AND name = ?", (mod, local)).fetchone()
+        if imp and imp["target"] != dotted:
+            return _resolve_dotted(con, ".".join([imp["target"], *rest]),
+                                   kind, depth + 1)
+        for star in con.execute("SELECT target FROM py_imports WHERE module = ?"
+                                " AND name = '*'", (mod,)).fetchall():
+            hit = _resolve_dotted(con, ".".join([star["target"], local, *rest]),
+                                  kind, depth + 1)
+            if hit:
+                return hit
+    return []
+
+
+def _api_hit(entry, root: Path, r) -> dict:
+    out = {"codebase": entry.id, "name": r["name"], "kind": r["kind"],
+           "path": str(root / r["path"]), "line": r["line"],
+           "language": "Python", "signature": r["signature"],
+           "qualname": r["qualname"], "summary": _summary(r["doc"])}
+    bases = json.loads(r["bases"] or "[]")
+    if bases:
+        out["bases"] = bases
+    decos = json.loads(r["decorators"] or "[]")
+    if decos:
+        out["decorators"] = decos
+    if r["value"]:
+        out["value"] = r["value"]
+    return out
+
+
+def _dotted_symbols(entry, root: Path, name: str, kind: str | None,
+                    limit: int) -> list[dict] | None:
+    """Dotted lookup (`pkg.mod.Class.meth`, `Class.meth`); None if no py index."""
+    con = _py_con(entry)
+    if con is None:
+        return None
+    try:
+        rows = _resolve_dotted(con, name, kind)
+        if not rows:  # suffix match: "MCMC.NewScan" -> bsmart.scans.MCMC.NewScan
+            kfilter = " AND kind = ?" if kind else ""
+            rows = con.execute(
+                f"SELECT {_API_COLS} FROM py_api WHERE qualname LIKE ?{kfilter}"
+                f" ORDER BY path, line LIMIT ?",
+                ["%." + name] + ([kind] if kind else []) + [limit]).fetchall()
+        return [_api_hit(entry, root, r) for r in rows[:limit]]
+    finally:
+        con.close()
+
+
 def find_symbol_impl(name: str, codebase: str | None = None,
                      kind: str | None = None, max_results: int = 50) -> list[dict]:
     results: list[dict] = []
@@ -147,18 +245,37 @@ def find_symbol_impl(name: str, codebase: str | None = None,
         root = Path(e.path)
         if not root.is_dir():
             continue
+        if "." in name:
+            hits = _dotted_symbols(e, root, name, kind, max_results - len(results))
+            if hits:
+                results.extend(hits)
+                continue
         rows = _db_symbols(root, e, name, kind, max_results - len(results))
         if rows is not None:
-            for sym_name, sym_kind, rel, line, language, signature in rows:
-                results.append({
-                    "codebase": e.id,
-                    "name": sym_name,
-                    "kind": sym_kind,
-                    "path": str(root / rel),
-                    "line": line,
-                    "language": language,
-                    "signature": signature,
-                })
+            con = _py_con(e)
+            try:
+                for sym_name, sym_kind, rel, line, language, signature in rows:
+                    api = None
+                    if con is not None and language == "Python":
+                        api = con.execute(
+                            f"SELECT {_API_COLS} FROM py_api WHERE path = ? AND"
+                            " line = ? AND name = ? AND kind != 'module'",
+                            (rel, line, sym_name)).fetchone()
+                    if api is not None:
+                        results.append(_api_hit(e, root, api))
+                        continue
+                    results.append({
+                        "codebase": e.id,
+                        "name": sym_name,
+                        "kind": sym_kind,
+                        "path": str(root / rel),
+                        "line": line,
+                        "language": language,
+                        "signature": signature,
+                    })
+            finally:
+                if con is not None:
+                    con.close()
         else:
             # no index.db or empty symbols table: rg word-search fallback
             for path, line_no, text in _rg_word_search(
@@ -169,13 +286,483 @@ def find_symbol_impl(name: str, codebase: str | None = None,
     return results
 
 
+def _member(r) -> dict:
+    m = {"name": r["name"], "kind": r["kind"], "line": r["line"],
+         "signature": r["signature"], "summary": _summary(r["doc"])}
+    bases = json.loads(r["bases"] or "[]")
+    if bases:
+        m["bases"] = bases
+    decos = json.loads(r["decorators"] or "[]")
+    if decos:
+        m["decorators"] = decos
+    if r["value"]:
+        m["value"] = r["value"]
+    return m
+
+
+def _subclasses(con, qualname: str, name: str, limit: int = 100) -> list[dict]:
+    """Classes whose bases name this class (name-based; may include homonyms)."""
+    out = []
+    for r in con.execute(f"SELECT {_API_COLS} FROM py_api WHERE kind = 'class'"
+                         " AND bases LIKE ? ORDER BY qualname", (f"%{name}%",)):
+        bases = json.loads(r["bases"] or "[]")
+        if any(b.split("[", 1)[0].rsplit(".", 1)[-1] == name for b in bases):
+            out.append({"qualname": r["qualname"], "path": r["path"],
+                        "line": r["line"], "summary": _summary(r["doc"])})
+            if len(out) >= limit:
+                break
+    return [s for s in out if s["qualname"] != qualname]
+
+
+def _outline_one(entry, root: Path, con, target: str, include_private: bool,
+                 max_members: int) -> dict | None:
+    rows = _resolve_dotted(con, target)
+    rows = [r for r in rows if r["kind"] in ("module", "class")] or rows
+    if not rows:  # a file path relative to the root
+        mod = con.execute("SELECT module FROM py_modules WHERE path = ?",
+                          (target.removeprefix("./"),)).fetchone()
+        if mod:
+            rows = _api_by_qualname(con, mod["module"], "module")
+    if not rows:  # unique qualname suffix: "MCMC" -> bsmart.scans.MCMC
+        cand = con.execute(f"SELECT {_API_COLS} FROM py_api WHERE qualname LIKE ?"
+                           " AND kind IN ('module', 'class') LIMIT 2",
+                           ("%." + target,)).fetchall()
+        if len(cand) == 1:
+            rows = cand
+    if not rows:
+        return None
+    r = rows[0]
+    out = {"codebase": entry.id, "qualname": r["qualname"], "kind": r["kind"],
+           "path": str(root / r["path"]), "line": r["line"],
+           "signature": r["signature"], "doc": r["doc"]}
+    if len(rows) > 1:
+        out["also_defined_at"] = [f"{x['path']}:{x['line']}" for x in rows[1:]]
+    bases = json.loads(r["bases"] or "[]")
+    if bases:
+        out["bases"] = bases
+    if r["kind"] == "class" and r["decorators"] != "[]":
+        out["decorators"] = json.loads(r["decorators"])
+
+    all_names = None
+    if r["kind"] == "module":
+        m = con.execute("SELECT all_names FROM py_modules WHERE module = ?"
+                        " AND path = ?", (r["qualname"], r["path"])).fetchone()
+        all_names = json.loads(m["all_names"]) if m and m["all_names"] else None
+        if all_names is not None:
+            out["__all__"] = all_names
+
+    def visible(name: str) -> bool:
+        if include_private:
+            return True
+        if all_names is not None:
+            return name in all_names
+        return not _is_private(name)
+
+    members: list[dict] = []
+    seen: dict[str, dict] = {}  # name defined in several try/if branches
+    for m in con.execute(
+            f"SELECT {_API_COLS} FROM py_api WHERE parent = ? AND path = ?"
+            " AND kind != 'module' ORDER BY line", (r["qualname"], r["path"])):
+        if not visible(m["name"]):
+            continue
+        if m["name"] in seen:
+            seen[m["name"]].setdefault("redefined_at", []).append(m["line"])
+            continue
+        seen[m["name"]] = _member(m)
+        members.append(seen[m["name"]])
+    out["members"] = members[:max_members]
+    if len(members) > max_members:
+        out["members_truncated"] = len(members) - max_members
+
+    if r["kind"] == "module":
+        if r["path"].endswith("__init__.py"):
+            prefix = r["qualname"] + "."
+            subs = [x["module"] for x in con.execute(
+                "SELECT DISTINCT module FROM py_modules WHERE module LIKE ?"
+                " ORDER BY module", (prefix + "%",))
+                if "." not in x["module"][len(prefix):]]
+            out["submodules"] = [
+                {"module": sm, "summary": _summary(
+                    (_api_by_qualname(con, sm, "module") or [{"doc": ""}])[0]["doc"])}
+                for sm in subs]
+        reexports = []
+        for imp in con.execute("SELECT name, target FROM py_imports WHERE"
+                               " module = ? ORDER BY line", (r["qualname"],)):
+            if imp["name"] == "*" or not visible(imp["name"]):
+                continue
+            if all_names is None and not r["path"].endswith("__init__.py"):
+                continue  # plain module imports are dependencies, not API
+            tgt = _resolve_dotted(con, imp["target"])
+            reexports.append({"name": imp["name"], "target": imp["target"],
+                              **({"kind": tgt[0]["kind"],
+                                  "signature": tgt[0]["signature"],
+                                  "summary": _summary(tgt[0]["doc"])}
+                                 if tgt else {})})
+        if reexports:
+            out["reexports"] = reexports
+        out["imports"] = sorted({i["target"] for i in con.execute(
+            "SELECT target FROM py_imports WHERE module = ?", (r["qualname"],))})
+    else:
+        subs = _subclasses(con, r["qualname"], r["name"])
+        if subs:
+            out["subclasses"] = subs
+    return out
+
+
+def outline_impl(target: str, codebase: str | None = None,
+                 include_private: bool = False, max_members: int = 200) -> list[dict]:
+    """Structured API outline of a Python module/package/class (no bodies)."""
+    results = []
+    for e in registry.resolve(codebase):
+        root = Path(e.path)
+        if not root.is_dir():
+            continue
+        con = _py_con(e)
+        if con is None:
+            continue
+        try:
+            o = _outline_one(e, root, con, target, include_private, max_members)
+        finally:
+            con.close()
+        if o is not None:
+            results.append(o)
+    if not results:
+        raise KeyError(f"no Python module/class {target!r} in "
+                       f"{codebase or 'any codebase'} (try find_symbol, or "
+                       f"reindex if this index predates the ast layer)")
+    return results
+
+
+def _has_table(con, name: str) -> bool:
+    return con.execute("SELECT 1 FROM sqlite_master WHERE type='table'"
+                       " AND name=?", (name,)).fetchone() is not None
+
+
+def _seg_match(pattern: list[str], keys: list[str]) -> bool:
+    """Same length; a "*" in the pattern matches any key."""
+    return len(pattern) == len(keys) and all(
+        p == "*" or p == k for p, k in zip(pattern, keys))
+
+
+def _prefix_match(want: list[str], keys: list[str]) -> bool:
+    """keys starts with want; "*" on either side matches any key, so a
+    concrete prefix (Codes/SPheno) also selects code patterns (Codes/*/Run)."""
+    return len(keys) >= len(want) and all(
+        w == "*" or k == "*" or w == k for w, k in zip(want, keys))
+
+
+def _data_key_agg(con, root: Path, entry, want: list[str],
+                  roots: set[str] | None) -> dict[str, dict]:
+    """Aggregate data_keys rows across files: keystr -> {files, types, values}."""
+    agg: dict[str, dict] = {}
+    if not _has_table(con, "data_keys"):
+        return agg
+    for r in con.execute("SELECT * FROM data_keys ORDER BY path"):
+        keys = json.loads(r["keys"])
+        if roots is not None and keys[0] not in roots:
+            continue
+        if not _prefix_match(want, keys):
+            continue
+        a = agg.setdefault(r["keys"], {"keys": keys, "n_files": 0, "files": [],
+                                       "types": [], "values": []})
+        a["n_files"] += 1
+        if len(a["files"]) < 3:
+            a["files"].append(str(root / r["path"]))
+        for t in json.loads(r["types"]):
+            if t not in a["types"]:
+                a["types"].append(t)
+        for v in json.loads(r["samples"]):
+            if len(a["values"]) < 5 and v not in a["values"]:
+                a["values"].append(v)
+    return agg
+
+
+def config_keys_impl(base: str | None = None, codebase: str | None = None,
+                     prefix: str | None = None, include_data: bool = True,
+                     data_prefix: str | None = None,
+                     max_results: int = 200) -> list[dict]:
+    """Key schema: code lookups (py_keys) merged with data files (data_keys).
+
+    data_prefix mounts the code keys of `base` under a data key path, for a
+    dict handed across calls (bsmart: tool `settings` = inputs["Codes"][name]).
+    """
+    want = [k for k in prefix.split("/") if k] if prefix else []
+    mount = [k for k in data_prefix.split("/") if k] if data_prefix else []
+    if base is not None:
+        base = base.removeprefix("self.").removeprefix("cls.")
+    results: list[dict] = []
+    for e in registry.resolve(codebase):
+        root = Path(e.path)
+        con = _py_con(e)
+        if con is None:
+            continue
+        try:
+            if base is None and want:  # data-only schema under a key prefix
+                for a in sorted(_data_key_agg(con, root, e, want, None).values(),
+                                key=lambda a: a["keys"]):
+                    results.append({"codebase": e.id, "keys": a["keys"],
+                                    "data": {k: v for k, v in a.items()
+                                             if k != "keys"}})
+                continue
+            if not _has_table(con, "py_keys"):
+                continue
+            if base is None:  # discovery: which receivers are key-indexed most
+                for r in con.execute(
+                        "SELECT base, COUNT(*) AS n, COUNT(DISTINCT keys) AS nk,"
+                        " GROUP_CONCAT(DISTINCT raw_base) AS raw FROM py_keys"
+                        " GROUP BY base ORDER BY n DESC LIMIT ?", (max_results,)):
+                    results.append({"codebase": e.id, "base": r["base"],
+                                    "n_uses": r["n"], "n_key_paths": r["nk"],
+                                    "written_as": sorted(r["raw"].split(","))})
+                continue
+            agg: dict[str, dict] = {}
+            for r in con.execute("SELECT * FROM py_keys WHERE base = ?"
+                                 " ORDER BY path, line", (base,)):
+                keys = json.loads(r["keys"])
+                if not _prefix_match(want, keys):
+                    continue
+                a = agg.setdefault(r["keys"], {
+                    "codebase": e.id, "keys": keys, "accesses": {},
+                    "defaults": [], "n_uses": 0, "locations": []})
+                a["n_uses"] += 1
+                a["accesses"][r["access"]] = a["accesses"].get(r["access"], 0) + 1
+                if r["dflt"] and r["dflt"] not in a["defaults"]:
+                    a["defaults"].append(r["dflt"])
+                if len(a["locations"]) < 3:
+                    a["locations"].append(
+                        f"{root / r['path']}:{r['line']} ({r['scope']})")
+            if include_data and agg:
+                if mount:  # data rows under the mount, re-keyed relative to it
+                    raw = _data_key_agg(con, root, e, mount + want, None)
+                    dagg: dict[str, dict] = {}
+                    for d in raw.values():
+                        rel = d["keys"][len(mount):]
+                        if not rel:
+                            continue
+                        m = dagg.setdefault(json.dumps(rel), {
+                            "keys": rel, "n_files": 0, "files": [],
+                            "types": [], "values": []})
+                        m["n_files"] += d["n_files"]
+                        for f in d["files"]:
+                            if f not in m["files"] and len(m["files"]) < 3:
+                                m["files"].append(f)
+                        for t in d["types"]:
+                            if t not in m["types"]:
+                                m["types"].append(t)
+                        for v in d["values"]:
+                            if v not in m["values"] and len(m["values"]) < 5:
+                                m["values"].append(v)
+                else:
+                    code_roots = {a["keys"][0] for a in agg.values()
+                                  if a["keys"][0] != "*"}
+                    dagg = _data_key_agg(con, root, e, want, code_roots)
+                code_keys = [a["keys"] for a in agg.values()]
+                for kstr, d in dagg.items():
+                    data = {k: v for k, v in d.items() if k != "keys"}
+                    if kstr in agg:
+                        agg[kstr]["data"] = data
+                        continue
+                    # read if a code path matches it, reads beneath it,
+                    # reads the list holding it (settings["Higgs"] covers
+                    # Higgs/*), or reads an entry by variable key
+                    # (obs[name] consumes obs/<name>/...). Iterating a dict
+                    # (cfg["Codes"]) does not cover its keys.
+                    dk = d["keys"]
+                    via = max((p for p in code_keys if _seg_match(
+                        p[:len(dk)], dk[:len(p)]) and (
+                            p[-1] == "*" or all(k == "*" for k in dk[len(p):]))),
+                        key=lambda p: (min(len(p), len(dk)), -p.count("*")),
+                        default=None)
+                    agg[kstr] = {"codebase": e.id, "keys": d["keys"],
+                                 "accesses": {}, "defaults": [], "n_uses": 0,
+                                 "locations": [], "data": data,
+                                 **({"read_via": via} if via else {})}
+                for a in agg.values():
+                    if a["n_uses"] and "data" in a:
+                        a["status"] = "read+set"
+                    elif a["n_uses"]:
+                        a["status"] = ("pattern" if "*" in a["keys"]
+                                       else "read_only")
+                    else:
+                        a["status"] = "read+set" if "read_via" in a else "set_only"
+            results.extend(sorted(agg.values(), key=lambda a: a["keys"]))
+        finally:
+            con.close()
+    return results[:max_results]
+
+
+def data_files_impl(codebase: str | None = None, glob: str | None = None,
+                    has_key: str | None = None, max_results: int = 100) -> list[dict]:
+    """List indexed JSON/YAML/TOML files, optionally those containing a key path."""
+    import fnmatch
+    want = [k for k in has_key.split("/") if k] if has_key else []
+    out: list[dict] = []
+    for e in registry.resolve(codebase):
+        con = _py_con(e)
+        if con is None:
+            continue
+        try:
+            if not _has_table(con, "data_files"):
+                continue
+            with_key = None
+            if want:
+                with_key = {r["path"] for r in con.execute(
+                    "SELECT path, keys FROM data_keys")
+                    if _prefix_match(want, json.loads(r["keys"]))}
+            for r in con.execute("SELECT path, format, size, top_keys, truncated,"
+                                 " content IS NOT NULL AS stored FROM data_files"
+                                 " ORDER BY path"):
+                if glob and not (fnmatch.fnmatch(r["path"], glob) or
+                                 fnmatch.fnmatch(Path(r["path"]).name, glob)):
+                    continue
+                if with_key is not None and r["path"] not in with_key:
+                    continue
+                out.append({"codebase": e.id,
+                            "path": str(Path(e.path) / r["path"]),
+                            "rel_path": r["path"], "format": r["format"],
+                            "size": r["size"], "stored": bool(r["stored"]),
+                            "top_keys": json.loads(r["top_keys"]),
+                            **({"truncated": True} if r["truncated"] else {})})
+                if len(out) >= max_results:
+                    return out
+        finally:
+            con.close()
+    return out
+
+
+def call_graph_impl(name: str, codebase: str | None = None,
+                    direction: str = "both", max_results: int = 50) -> list[dict]:
+    """Static callees / callers of a Python function, method or class."""
+    if direction not in ("both", "calls", "callers"):
+        raise ValueError("direction must be 'both', 'calls' or 'callers'")
+    out: list[dict] = []
+    for e in registry.resolve(codebase):
+        root = Path(e.path)
+        con = _py_con(e)
+        if con is None:
+            continue
+        try:
+            if not _has_table(con, "py_calls"):
+                continue
+            if "." in name:
+                rows = _resolve_dotted(con, name)
+                if not rows:
+                    rows = con.execute(
+                        f"SELECT {_API_COLS} FROM py_api WHERE qualname LIKE ?"
+                        " ORDER BY path, line LIMIT 10", ("%." + name,)).fetchall()
+            else:
+                rows = con.execute(
+                    f"SELECT {_API_COLS} FROM py_api WHERE name = ? AND kind IN"
+                    " ('function', 'method', 'class', 'module') ORDER BY path, line"
+                    " LIMIT 10", (name,)).fetchall()
+            for r in rows:
+                q = r["qualname"]
+                res = {"codebase": e.id, "qualname": q, "kind": r["kind"],
+                       "path": str(root / r["path"]), "line": r["line"],
+                       "signature": r["signature"]}
+                if direction in ("both", "calls"):
+                    callees: dict[str, dict] = {}
+                    for c in con.execute("SELECT callee, target, line FROM"
+                                         " py_calls WHERE caller = ? ORDER BY line",
+                                         (q,)):
+                        key = c["target"] or c["callee"]
+                        if key in callees:
+                            callees[key]["n"] += 1
+                            continue
+                        callees[key] = {"callee": c["callee"], "line": c["line"],
+                                        "n": 1, **({"target": c["target"]}
+                                                   if c["target"] else {})}
+                    res["calls"] = list(callees.values())[:max_results]
+                if direction in ("both", "callers"):
+                    res["called_by"] = [
+                        {"caller": c["caller"], "callee": c["callee"],
+                         "path": str(root / c["path"]), "line": c["line"]}
+                        for c in con.execute(
+                            "SELECT * FROM py_calls WHERE target = ? ORDER BY"
+                            " caller, line LIMIT ?", (q, max_results))]
+                    if r["kind"] == "method":  # x.meth() with unknown x
+                        poss = con.execute(
+                            "SELECT * FROM py_calls WHERE name = ? AND target != ?"
+                            " AND callee LIKE ? AND (target = '' OR target NOT IN"
+                            " (SELECT qualname FROM py_api)) ORDER BY caller, line",
+                            (r["name"], q, "%." + r["name"])).fetchall()
+                        if poss:
+                            res["n_possible_callers"] = len(poss)
+                            res["possible_callers"] = [
+                                {"caller": c["caller"], "callee": c["callee"],
+                                 "path": str(root / c["path"]), "line": c["line"]}
+                                for c in poss[:max_results]]
+                out.append(res)
+        finally:
+            con.close()
+    if not out:
+        raise KeyError(f"no Python function/method/class {name!r} in "
+                       f"{codebase or 'any codebase'} (try find_symbol, or "
+                       f"reindex if this index predates the call graph)")
+    return out
+
+
+def _stored_file(path: str) -> tuple[registry.CodebaseEntry, str, str] | None:
+    """(entry, rel, content) for a data file stored in some index, else None."""
+    p = Path(path)
+    for e in registry.load_registry():
+        if p.is_absolute():
+            if not p.is_relative_to(e.path):
+                continue
+            rel = p.relative_to(e.path).as_posix()
+        else:
+            rel = p.as_posix().removeprefix("./")
+        con = _py_con(e)
+        if con is None:
+            continue
+        try:
+            if not _has_table(con, "data_files"):
+                continue
+            r = con.execute("SELECT content FROM data_files WHERE path = ?"
+                            " AND content IS NOT NULL", (rel,)).fetchone()
+        finally:
+            con.close()
+        if r is not None:
+            return e, rel, r["content"]
+    return None
+
+
 def _registered_roots() -> list[tuple[registry.CodebaseEntry, Path]]:
     return [(e, Path(e.path)) for e in registry.load_registry() if Path(e.path).is_dir()]
+
+
+def _numbered(lines: list[str], offset: int, limit: int) -> list[str]:
+    return [f"{n}: {lines[n - 1]}"
+            for n in range(offset, min(offset + limit, len(lines) + 1))]
 
 
 def read_file_impl(path: str, offset: int = 1, limit: int = 200,
                    center: int | None = None, before: int = 10,
                    after: int = 10) -> dict:
+    """Read from disk; if the file is not there (no checkout), fall back to a
+    data file whose content is stored in the index (source="index")."""
+    try:
+        return _read_disk(path, offset, limit, center, before, after)
+    except (FileNotFoundError, ValueError) as err:
+        stored = _stored_file(path)
+        if stored is None:
+            raise err
+    e, rel, content = stored
+    if center is not None:
+        center = max(1, int(center))
+        offset = max(1, center - max(0, int(before)))
+        limit = max(0, int(before)) + max(0, int(after)) + 1
+    offset = max(1, offset)
+    limit = min(max(limit, 0), _MAX_READ_LINES)
+    lines = content.splitlines()
+    return {"codebase": e.id, "rel_path": rel, "offset": offset,
+            "total_lines": len(lines), "content": _numbered(lines, offset, limit),
+            "source": "index"}
+
+
+def _read_disk(path: str, offset: int = 1, limit: int = 200,
+               center: int | None = None, before: int = 10,
+               after: int = 10) -> dict:
     """Read numbered lines from a registered file.
 
     Two modes:
@@ -211,10 +798,7 @@ def read_file_impl(path: str, offset: int = 1, limit: int = 200,
             offset = max(1, offset)
             limit = min(max(limit, 0), _MAX_READ_LINES)
             lines = resolved.read_text(errors="replace").splitlines()
-            selected = [
-                f"{n}: {lines[n - 1]}"
-                for n in range(offset, min(offset + limit, len(lines) + 1))
-            ]
+            selected = _numbered(lines, offset, limit)
             return {
                 "codebase": e.id,
                 "rel_path": resolved.relative_to(root).as_posix(),
@@ -323,15 +907,21 @@ def create_mcp_server() -> FastMCP:
     @mcp.tool()
     def find_symbol(name: str, codebase: str | None = None,
                     kind: str | None = None, max_results: int = 50) -> list[dict]:
-        """Look up a class/function/variable symbol via the ctags index.
+        """Look up a class/function/variable symbol via the symbol index.
 
         `name` is matched exactly first, then as a substring if nothing
-        matched exactly. `codebase` is an optional id or bare name (omit to
-        search all); `kind` filters by ctags kind, e.g. "class", "function",
-        "member". Returns {codebase, name, kind, path, line, language,
-        signature}. If a codebase has no index yet, falls back to a whole-
-        word ripgrep and returns grep-shaped hits
-        {codebase, path, line_no, text} instead.
+        matched exactly. A dotted name ("pkg.mod.Class.method",
+        "Class.method", or a re-export like "pkg.Name") is resolved against
+        Python qualified names, following imports. `codebase` is an
+        optional id or bare name (omit to search all); `kind` filters by
+        kind: Python uses "module", "class", "function", "method",
+        "variable", "attribute", "instance_attribute" (self.x set in a
+        method); other languages use ctags kinds (e.g.
+        "class", "function", "member"). Returns {codebase, name, kind, path,
+        line, language, signature}; Python hits also carry qualname,
+        summary (docstring first paragraph), and bases/decorators/value
+        (full literal constant) when present. If a codebase has no index yet, falls back to a whole-word
+        ripgrep and returns grep-shaped hits {codebase, path, line_no, text}.
 
         Example: find_symbol("Kinematics", codebase="atlas", kind="class") ->
             [{"codebase": "atlas@1.0", "name": "Kinematics",
@@ -342,7 +932,9 @@ def create_mcp_server() -> FastMCP:
         return find_symbol_impl(name, codebase, kind, max_results)
 
     @mcp.tool()
-    def read_file(path: str, offset: int = 1, limit: int = 200) -> dict:
+    def read_file(path: str, offset: int = 1, limit: int = 200,
+                  center: int | None = None, before: int = 10,
+                  after: int = 10) -> dict:
         """Read a numbered slice of a file inside any registered codebase.
 
         `path` may be absolute or relative to a codebase root (first
@@ -360,10 +952,148 @@ def create_mcp_server() -> FastMCP:
              "content": ["40: void Cuts::apply() {", "41:   ..."]}
         Context window: read_file("src/cuts.cxx", center=152, before=5,
             after=20) -> lines 147-172 (useful for macro expansions).
+        Data files stored in the index (see data_files) are served from it
+        when the checkout is absent; the result then has source="index".
 
         If unsure which codebases are indexed, call list_codebases first; selectors are 'name' (latest) or 'name@version'.
         """
         return read_file_impl(path, offset, limit, center, before, after)
+
+    @mcp.tool()
+    def outline(target: str, codebase: str | None = None,
+                include_private: bool = False,
+                max_members: int = 200) -> list[dict]:
+        """API outline of a Python package, module, or class, without reading source.
+
+        `target` is a dotted name ("bsmart", "bsmart.scans.MCMC",
+        "bsmart.scans.MCMC.NewScan"), a unique dotted suffix ("MCMC.NewScan"),
+        a re-exported name ("pkg.Name" resolved through imports), or a file
+        path relative to the codebase root. Returns one dict per matching
+        codebase: {codebase, qualname, kind, path, line, signature, doc,
+        members[{name, kind, line, signature, summary, bases?, decorators?,
+        value?}]} — `value` is the full source of a long literal constant
+        (e.g. a plugin's settings/metadata dict) that the signature truncates;
+        plus, for modules: imports, __all__ (if declared), reexports
+        (package/`__all__` names with their resolved target), and for
+        packages submodules[{module, summary}]; for classes: bases and
+        subclasses (classes naming it as a base — e.g. every plugin
+        implementing an interface). A class's signature is its constructor
+        signature (from __init__ or dataclass fields). Private (_x) members
+        are hidden unless include_private=True; __all__ restricts module
+        members when declared.
+
+        Example: outline("bsmart.scans.MCMC.NewScan") ->
+            [{"qualname": "bsmart.scans.MCMC.NewScan", "kind": "class",
+              "bases": ["Scan"], "signature": "(scan_config, ...)",
+              "members": [{"name": "run", "kind": "method", ...}], ...}]
+
+        Use read_file(path, center=line) for a body. If unsure which codebases are
+        indexed, call list_codebases first; selectors are 'name' (latest) or
+        'name@version'.
+        """
+        return outline_impl(target, codebase, include_private, max_members)
+
+    @mcp.tool()
+    def call_graph(name: str, codebase: str | None = None,
+                   direction: str = "both", max_results: int = 50) -> list[dict]:
+        """Static call graph of a Python function, method or class: what it calls
+        and who calls it. Use it to see how an API is driven in practice.
+
+        `name` is a qualified/dotted name ("bsmart.HEPRun.HEPRun.run_batch",
+        "core.Scan.run") or a bare name (all definitions, max 10).
+        `direction` is "both" (default), "calls" or "callers". Returns one
+        dict per definition: {codebase, qualname, kind, path, line,
+        signature, calls[{callee, target?, line, n}], called_by[{caller,
+        callee, path, line}]} — `target` is the resolved definition
+        (imports, re-exports, self.method() through base classes; external
+        ones like "numpy.array" kept). Calling a class = constructing it.
+        For methods, possible_callers lists `x.meth()` calls whose receiver
+        type is unknown statically (e.g. self.RunManager.run_batch) — likely
+        but unverified, n_possible_callers gives the total.
+
+        Example: call_graph("run_batch", codebase="bsmart", direction="callers")
+            -> [{"qualname": "bsmart.HEPRun.HEPRun.run_batch", "called_by": [],
+                 "possible_callers": [{"caller": "bsmart.scans.AffineMC.NewScan.
+                 run_batch", "callee": "self.RunManager.run_batch", ...}]}]
+
+        If unsure which codebases are indexed, call list_codebases first;
+        selectors are 'name' (latest) or 'name@version'.
+        """
+        return call_graph_impl(name, codebase, direction, max_results)
+
+    @mcp.tool()
+    def config_keys(base: str | None = None, codebase: str | None = None,
+                    prefix: str | None = None, include_data: bool = True,
+                    data_prefix: str | None = None,
+                    max_results: int = 200) -> list[dict]:
+        """Which string keys Python code reads from a config/dict, with defaults.
+
+        Built statically from every lookup chain like cfg["Setup"]["Cores"],
+        cfg["Setup"].get("Resume", "False"), "SLHA_Output" in cfg["Setup"],
+        or a write cfg["A"]["B"] = .... For config-driven codes this lists the
+        valid input-file keys, their defaults, and where each is consumed.
+
+        Call with no `base` first to discover receivers: returns
+        [{codebase, base, n_uses, n_key_paths, written_as}] ranked by use
+        ("self." is stripped, so `inputs` covers self.inputs too). Then pass
+        `base` (e.g. "inputs", "os.environ") and optionally `prefix` — a
+        "/"-separated key path such as "Setup" or "Codes/*" ("*" = a
+        non-constant key, e.g. a loop variable) — to get one row per key path:
+        {codebase, keys, accesses{index|get|in|set|del: n}, defaults,
+        n_uses, locations[<=3 "path:line (scope)"]}.
+
+        With include_data (default), key paths found in the codebase's
+        JSON/YAML/TOML files (example inputs, templates) are merged in when
+        their top-level key is one the code reads: rows gain
+        data{n_files, files[<=3], types, values[<=5 samples]} and a status:
+        "read+set" (read by code and set in examples), "read_only" (code
+        reads it, no example sets it: optional/defaulted), "set_only" (in
+        data files but never read via this base: dead option, typo, or read
+        through an alias), "pattern" (code path with "*", matched by
+        concrete data rows carrying read_via; read_via is also set when
+        code reads keys beneath a data container, reads the list holding a
+        data element, or reads an entry by a variable key, which consumes
+        everything nested in it). With base omitted but
+        `prefix` given, returns the data-file schema alone.
+
+        Aliases: within a function, s = cfg["Setup"]; s["Cores"] is reported
+        as cfg/Setup/Cores. A dict handed across calls can't be traced
+        statically — use `data_prefix` to mount its data, e.g.
+        config_keys("settings", data_prefix="Codes/*") matches a tool's
+        settings["Command"] against Codes/<tool>/Command in example inputs.
+
+        Example: config_keys("inputs", codebase="bsmart", prefix="Setup") ->
+            [{"keys": ["Setup", "Resume"], "accesses": {"get": 3},
+              "defaults": ["'False'"], ...}, ...]
+
+        If unsure which codebases are indexed, call list_codebases first;
+        selectors are 'name' (latest) or 'name@version'.
+        """
+        return config_keys_impl(base, codebase, prefix, include_data,
+                                data_prefix, max_results)
+
+    @mcp.tool()
+    def data_files(codebase: str | None = None, glob: str | None = None,
+                   has_key: str | None = None,
+                   max_results: int = 100) -> list[dict]:
+        """List JSON/YAML/TOML files (example inputs, templates, configs).
+
+        `glob` filters by path or file name (e.g. "*MCMC*.json",
+        "*/InputExamples/*"); `has_key` keeps files containing a "/"-separated
+        key path, "*" matching any key (e.g. "Codes/SModelS" -> every example
+        input that configures SModelS). Returns {codebase, path, rel_path,
+        format, size, stored, top_keys, truncated?}. stored=True means the
+        whole file is in the index: read_file works on it even without the
+        checkout. For the merged key schema use config_keys.
+
+        Example: data_files(codebase="bsmart", has_key="Codes/SModelS") ->
+            [{"rel_path": "src/bsmart/data/InputExamples/SMSQQ/SMSQQ.json",
+              "format": "json", "stored": true, "top_keys": ["Setup", ...]}]
+
+        If unsure which codebases are indexed, call list_codebases first;
+        selectors are 'name' (latest) or 'name@version'.
+        """
+        return data_files_impl(codebase, glob, has_key, max_results)
 
     @mcp.tool()
     def index_codebase(path: str, name: str, version: str,

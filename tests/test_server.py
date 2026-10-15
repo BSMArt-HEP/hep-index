@@ -20,8 +20,11 @@ from hep_index import registry
 from hep_index.recipes import RECIPES
 from hep_index.server import (create_mcp_server, fetch_codebase_impl,
                               find_symbol_impl, index_codebase_impl,
-                              list_codebases_impl, read_file_impl,
-                              search_code_impl)
+                              call_graph_impl, config_keys_impl,
+                              data_files_impl,
+                              list_codebases_impl,
+                              outline_impl,
+                              read_file_impl, search_code_impl)
 
 ATLAS_FILES = {
     "physics/kine.py": (
@@ -339,11 +342,12 @@ def test_read_file_missing(two_codebases):
 
 # --------------------------------------------------------------- MCP server wiring
 
-def test_create_mcp_server_registers_six_tools():
+def test_create_mcp_server_registers_ten_tools():
     srv = create_mcp_server()
     tools = {t.name: t for t in srv._tool_manager.list_tools()}
     assert set(tools) == {"list_codebases", "search_code", "find_symbol",
-                          "read_file", "index_codebase", "fetch_codebase"}
+                          "read_file", "outline", "call_graph", "config_keys",
+                          "data_files", "index_codebase", "fetch_codebase"}
     for tool in tools.values():
         assert tool.description, f"missing LLM-facing description on {tool.name}"
     assert "regex" in tools["search_code"].description.lower()
@@ -356,6 +360,9 @@ def test_create_mcp_server_registers_six_tools():
     hint = "list_codebases first; selectors are 'name' (latest) or 'name@version'"
     for name in ("list_codebases", "search_code", "find_symbol", "read_file"):
         assert hint in tools[name].description, f"hint missing on {name}"
+    # the MCP wrapper must expose read_file's context-window parameters
+    props = tools["read_file"].parameters["properties"]
+    assert {"center", "before", "after"} <= set(props)
 
 
 def test_read_file_context_window(two_codebases):
@@ -497,3 +504,305 @@ def test_fetch_codebase_not_in_catalog(catalog_env):
 def test_fetch_codebase_bad_version(catalog_env):
     with pytest.raises(ValueError, match="unknown version: toygit@9.9"):
         fetch_codebase_impl("toygit", version="9.9")
+
+
+# ------------------------------------------------------- python ast layer (outline)
+
+PYPKG_FILES = {
+    "src/pkg/__init__.py": '"""Toy package."""\nfrom .core import Scan\n',
+    "src/pkg/core.py": (
+        '"""Core module.\n\n-----\nBanner."""\n'
+        "class Scan:\n"
+        '    """Parent scan class."""\n'
+        "    def __init__(self, inputs, log=None):\n"
+        "        self.inputs = inputs\n"
+        "    def run(self, n: int = 10) -> None:\n"
+        '        """Run the scan."""\n'
+        "    def _private(self): ...\n"
+    ),
+    "src/pkg/scans/__init__.py": "",
+    "src/pkg/scans/mcmc.py": (
+        "from pkg.core import Scan\n"
+        "__meta__ = {'name': 'MCMC', 'settings': {'Points': 'Int',"
+        " 'Valid Points': 'Int', 'Merge Results': 'Boolean'}}\n"
+        "class NewScan(Scan):\n"
+        '    """MCMC scan."""\n'
+        "    def run(self): ...\n"
+    ),
+    "src/pkg/scans/grid.py": (
+        "from ..core import Scan\n"
+        "class NewScan(Scan):\n"
+        '    """Grid scan."""\n'
+        "    def initialise(self):\n"
+        "        n = self.inputs['Setup']['Points']\n"
+        "        r = self.inputs['Setup'].get('Resume', 'False')\n"
+        "        if 'Seed' in self.inputs['Setup']:\n"
+        "            pass\n"
+        "        for c in self.inputs['Codes']:\n"
+        "            self.inputs['Codes'][c]['Run'] = 'True'\n"
+    ),
+    "src/pkg/tool.py": (
+        "class Tool:\n"
+        "    def __init__(self, settings):\n"
+        "        self.settings = settings\n"
+        "        cmd = self.settings['Command']\n"
+        "        lst = self.settings['Higgs']\n"
+    ),
+    "examples/mcmc.json": (
+        '{"Setup": {"Points": 100, "Resume": "True", "Typo Key": 1},'
+        ' "Codes": {"SPheno": {"Run": "True", "Command": "SPheno",'
+        ' "Unused": 2, "Higgs": [1, 2]}},'
+        ' "Plotting": {"Plots": []}}'
+    ),
+    "examples/grid.yaml": "Setup:\n  Points: 5\nCodes:\n  SModelS:\n    Run: 'False'\n",
+}
+
+
+@pytest.fixture
+def pypkg(env):
+    src = env / "pypkg"
+    for rel, text in PYPKG_FILES.items():
+        f = src / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(text)
+    index_codebase_impl(str(src), "pypkg", "1.0")
+    return src
+
+
+def test_find_symbol_python_enriched(pypkg):
+    hits = find_symbol_impl("NewScan", codebase="pypkg")
+    assert {h["qualname"] for h in hits} == {"pkg.scans.mcmc.NewScan",
+                                             "pkg.scans.grid.NewScan"}
+    mcmc = next(h for h in hits if h["qualname"].endswith("mcmc.NewScan"))
+    assert mcmc["kind"] == "class"
+    assert mcmc["bases"] == ["Scan"]
+    assert mcmc["summary"] == "MCMC scan."
+    assert mcmc["path"] == str(pypkg / "src/pkg/scans/mcmc.py")
+    run = find_symbol_impl("run", codebase="pypkg", kind="method")
+    assert "pkg.core.Scan.run" in {h["qualname"] for h in run}
+
+
+def test_find_symbol_dotted(pypkg):
+    [hit] = find_symbol_impl("pkg.core.Scan.run", codebase="pypkg")
+    assert hit["signature"] == "(self, n: int = 10) -> None"
+    assert hit["summary"] == "Run the scan."
+    # re-export resolution: pkg.Scan -> pkg.core.Scan
+    [hit] = find_symbol_impl("pkg.Scan", codebase="pypkg")
+    assert hit["qualname"] == "pkg.core.Scan"
+    assert hit["signature"] == "(inputs, log=None)"
+    # dotted suffix
+    [hit] = find_symbol_impl("mcmc.NewScan", codebase="pypkg")
+    assert hit["qualname"] == "pkg.scans.mcmc.NewScan"
+    # literal value surfaced
+    [meta] = find_symbol_impl("pkg.scans.mcmc.__meta__", codebase="pypkg")
+    assert "'Merge Results': 'Boolean'" in meta["value"]
+
+
+def test_outline_package(pypkg):
+    [o] = outline_impl("pkg", codebase="pypkg")
+    assert o["kind"] == "module"
+    assert o["doc"] == "Toy package."
+    assert [s["module"] for s in o["submodules"]] == ["pkg.core", "pkg.scans",
+                                                      "pkg.tool"]
+    core = next(s for s in o["submodules"] if s["module"] == "pkg.core")
+    assert core["summary"] == "Core module."          # banner rule dropped
+    [rex] = o["reexports"]
+    assert rex["name"] == "Scan" and rex["target"] == "pkg.core.Scan"
+    assert rex["kind"] == "class" and rex["signature"] == "(inputs, log=None)"
+
+
+def test_outline_class_members_and_subclasses(pypkg):
+    [o] = outline_impl("pkg.core.Scan", codebase="pypkg")
+    assert o["kind"] == "class"
+    assert o["signature"] == "(inputs, log=None)"
+    names = [m["name"] for m in o["members"]]
+    assert names == ["__init__", "inputs", "run"]     # by line; _private hidden
+    inputs = o["members"][1]
+    assert inputs["kind"] == "instance_attribute"
+    assert inputs["signature"] == " = inputs"
+    assert inputs["summary"] == "Set in __init__()."
+    assert {s["qualname"] for s in o["subclasses"]} == {
+        "pkg.scans.mcmc.NewScan", "pkg.scans.grid.NewScan"}
+    [o] = outline_impl("pkg.core.Scan", codebase="pypkg", include_private=True)
+    assert "_private" in [m["name"] for m in o["members"]]
+    # re-exported name and dotted suffix resolve to the same class
+    assert outline_impl("pkg.Scan", codebase="pypkg")[0]["qualname"] == \
+        "pkg.core.Scan"
+    assert outline_impl("mcmc.NewScan")[0]["bases"] == ["Scan"]
+
+
+def test_outline_module_by_path_and_value(pypkg):
+    [o] = outline_impl("src/pkg/scans/mcmc.py", codebase="pypkg")
+    assert o["qualname"] == "pkg.scans.mcmc"
+    assert "pkg.core.Scan" in o["imports"]
+    meta = next(m for m in o["members"] if m["name"] == "__meta__")
+    assert "'Valid Points': 'Int'" in meta["value"]
+    assert "reexports" not in o                       # plain module imports
+
+
+def test_outline_unknown_and_legacy_index(pypkg, two_codebases):
+    with pytest.raises(KeyError):
+        outline_impl("pkg.nope", codebase="pypkg")
+    # atlas index was written without py_api tables -> skipped, not crashed
+    with pytest.raises(KeyError):
+        outline_impl("Kinematics", codebase="atlas")
+
+
+def test_config_keys(pypkg):
+    [top] = [r for r in config_keys_impl(codebase="pypkg") if r["base"] == "inputs"]
+    assert top["written_as"] == ["self.inputs"]
+    assert top["n_uses"] == 5
+    rows = config_keys_impl("self.inputs", codebase="pypkg", prefix="Setup",
+                            include_data=False)
+    by = {"/".join(r["keys"]): r for r in rows}
+    assert set(by) == {"Setup/Points", "Setup/Resume", "Setup/Seed"}
+    assert by["Setup/Resume"]["accesses"] == {"get": 1}
+    assert by["Setup/Resume"]["defaults"] == ["'False'"]
+    assert by["Setup/Seed"]["accesses"] == {"in": 1}
+    loc = by["Setup/Points"]["locations"][0]
+    assert loc.endswith("grid.py:5 (pkg.scans.grid.NewScan.initialise)")
+    [codes] = config_keys_impl("inputs", codebase="pypkg", prefix="Codes/*",
+                               include_data=False)
+    assert codes["keys"] == ["Codes", "*", "Run"]
+    assert codes["accesses"] == {"set": 1}
+    assert config_keys_impl("nope", codebase="pypkg") == []
+
+
+def test_config_keys_merged_with_data(pypkg):
+    rows = config_keys_impl("inputs", codebase="pypkg", prefix="Setup")
+    by = {"/".join(r["keys"]): r for r in rows}
+    assert by["Setup/Points"]["status"] == "read+set"
+    assert by["Setup/Points"]["data"]["n_files"] == 2
+    assert by["Setup/Points"]["data"]["values"] == ["5", "100"]
+    assert by["Setup/Seed"]["status"] == "read_only"
+    assert by["Setup/Typo Key"]["status"] == "set_only"
+    assert by["Setup/Typo Key"]["n_uses"] == 0
+    assert by["Setup"]["status"] == "read+set"     # container read beneath
+    # Plotting is never read via inputs -> its data is not merged at all
+    assert not any(r["keys"][0] == "Plotting" for r in
+                   config_keys_impl("inputs", codebase="pypkg"))
+    # wildcard code path Codes/*/Run covers concrete data rows
+    codes = {"/".join(r["keys"]): r for r in
+             config_keys_impl("inputs", codebase="pypkg", prefix="Codes")}
+    assert codes["Codes/*/Run"]["status"] == "pattern"
+    assert codes["Codes/SPheno/Run"]["read_via"] == ["Codes", "*", "Run"]
+    assert codes["Codes/SPheno/Run"]["status"] == "read+set"
+    # iterating cfg["Codes"] does not cover keys inside each entry
+    assert codes["Codes/SPheno/Unused"]["status"] == "set_only"
+    # code-only view
+    assert all("data" not in r for r in config_keys_impl(
+        "inputs", codebase="pypkg", include_data=False))
+
+
+def test_config_keys_data_prefix_mount(pypkg):
+    by = {"/".join(r["keys"]): r for r in config_keys_impl(
+        "settings", codebase="pypkg", data_prefix="Codes/*")}
+    assert by["Command"]["status"] == "read+set"
+    assert by["Command"]["data"]["values"] == ['"SPheno"']
+    assert by["Higgs/*"]["status"] == "read+set"     # inside a read container
+    assert by["Unused"]["status"] == "set_only"
+    # a variable-key read (Codes/*) consumes the nested entry
+    nested = {"/".join(r["keys"]): r for r in config_keys_impl(
+        "inputs", codebase="pypkg", prefix="Codes/SPheno")}
+    assert "Codes/SPheno/Higgs/*" in nested
+
+
+def test_config_keys_data_only_schema(pypkg):
+    rows = config_keys_impl(codebase="pypkg", prefix="Plotting")
+    assert [r["keys"] for r in rows] == [["Plotting"], ["Plotting", "Plots"]]
+    assert rows[1]["data"]["values"] == ["[0 items]"]
+
+
+def test_data_files_listing(pypkg):
+    files = data_files_impl(codebase="pypkg")
+    assert [f["rel_path"] for f in files] == ["examples/grid.yaml",
+                                              "examples/mcmc.json"]
+    assert files[1]["top_keys"] == ["Setup", "Codes", "Plotting"]
+    assert all(f["stored"] for f in files)
+    assert [f["rel_path"] for f in data_files_impl(
+        codebase="pypkg", has_key="Codes/SModelS")] == ["examples/grid.yaml"]
+    assert len(data_files_impl(codebase="pypkg", has_key="Codes/*/Run")) == 2
+    assert [f["format"] for f in data_files_impl(
+        codebase="pypkg", glob="*.json")] == ["json"]
+
+
+def test_read_file_falls_back_to_index_without_checkout(pypkg):
+    on_disk = read_file_impl("examples/mcmc.json")
+    assert "source" not in on_disk
+    shutil.rmtree(pypkg)                             # checkout gone
+    out = read_file_impl("examples/mcmc.json")
+    assert out["source"] == "index"
+    assert out["content"] == on_disk["content"]
+    out = read_file_impl(str(pypkg / "examples/grid.yaml"), center=2,
+                         before=0, after=0)
+    assert out["content"] == ["2:   Points: 5"]
+    with pytest.raises((FileNotFoundError, ValueError)):
+        read_file_impl("src/pkg/core.py")            # source is not stored
+
+
+CALLS_FILES = {
+    "src/app/__init__.py": "from .runner import Runner\n",
+    "src/app/runner.py": (
+        "class Runner:\n"
+        "    def run_batch(self, pts):\n"
+        "        return [p for p in pts]\n"
+    ),
+    "src/app/base.py": (
+        "from app import Runner\n"
+        "import numpy as np\n"
+        "class Base:\n"
+        "    def __init__(self):\n"
+        "        self.RunManager = Runner()\n"
+        "    def make_dirs(self):\n"
+        "        np.zeros(2)\n"
+    ),
+    "src/app/scan.py": (
+        "from .base import Base\n"
+        "class NewScan(Base):\n"
+        "    def run(self):\n"
+        "        self.make_dirs()\n"
+        "        self.RunManager.run_batch([1])\n"
+        "        self.other.run_batch([2])\n"
+    ),
+}
+
+
+@pytest.fixture
+def callpkg(env):
+    src = env / "callpkg"
+    for rel, text in CALLS_FILES.items():
+        f = src / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(text)
+    index_codebase_impl(str(src), "callpkg", "1.0")
+    return src
+
+
+def test_call_graph_resolution(callpkg):
+    [run] = call_graph_impl("app.scan.NewScan.run", codebase="callpkg",
+                            direction="calls")
+    targets = {c["callee"]: c.get("target") for c in run["calls"]}
+    assert targets["self.make_dirs"] == "app.base.Base.make_dirs"  # inherited
+    # typed via Base.__init__'s self.RunManager = Runner(), re-exported by app
+    assert targets["self.RunManager.run_batch"] == "app.runner.Runner.run_batch"
+    assert targets["self.other.run_batch"] is None
+    assert "called_by" not in run
+    [init] = call_graph_impl("app.base.Base.__init__", direction="calls")
+    assert init["calls"][0]["target"] == "app.runner.Runner"   # constructor
+    [mk] = call_graph_impl("app.base.Base.make_dirs", direction="calls")
+    assert mk["calls"][0]["target"] == "numpy.zeros"
+
+
+def test_call_graph_callers(callpkg):
+    [rb] = call_graph_impl("Runner.run_batch", codebase="callpkg",
+                           direction="callers")
+    assert [c["caller"] for c in rb["called_by"]] == ["app.scan.NewScan.run"]
+    assert rb["n_possible_callers"] == 1                # self.other.run_batch
+    assert rb["possible_callers"][0]["callee"] == "self.other.run_batch"
+    [runner] = call_graph_impl("app.Runner", direction="callers")
+    assert [c["caller"] for c in runner["called_by"]] == ["app.base.Base.__init__"]
+    assert len(call_graph_impl("run_batch", codebase="callpkg")) == 1  # bare name
+    with pytest.raises(KeyError):
+        call_graph_impl("nope", codebase="callpkg")
+    with pytest.raises(ValueError):
+        call_graph_impl("run", direction="sideways")
