@@ -127,6 +127,10 @@ def read_file_impl(path: str, offset: int = 1, limit: int = 200) -> dict
   Fallback when index.db missing or n_symbols == 0: rg word search
   `\b<name>\b` and return hits as `{codebase, path (absolute), line_no, text}`.
 - `_resolve_dotted` work is bounded by a 20k-query budget; exhaustion = unresolved.
+- The budget is FRESH per find_symbol/call_graph lookup but SHARED across a whole
+  outline call: a pathological import graph can silently skip later re-export
+  annotations (members/submodules are unaffected — they use direct SQL). An
+  exhausted outline-target resolution surfaces as the ordinary KeyError.
 - `outline_impl(target, codebase=None, include_private=False, max_members=200)`
   → list (one per codebase with a match) of `{codebase, qualname, kind, path,
   line, signature, doc, members[...]}` + modules: `imports`, `__all__`,
