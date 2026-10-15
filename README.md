@@ -26,10 +26,10 @@ Zero-install, straight from the git remote (pin a tag for reproducibility):
 
 ```bash
 # one-shot use
-uvx --from git+https://github.com/BSMArt-HEP/hep-index.git@v0.3.0 hep-index list
+uvx --from git+https://github.com/BSMArt-HEP/hep-index.git@v0.4.0 hep-index list
 
 # or install persistently (isolated venv, `hep-index` on PATH)
-uv tool install git+https://github.com/BSMArt-HEP/hep-index.git@v0.3.0
+uv tool install git+https://github.com/BSMArt-HEP/hep-index.git@v0.4.0
 hep-index list
 ```
 
@@ -61,7 +61,7 @@ zero-install via uvx, pinned tag:
 
 ```json
 {"mcpServers": {"hep-index": {
-  "command": "uvx", "args": ["--from", "git+https://github.com/BSMArt-HEP/hep-index.git@v0.3.0",
+  "command": "uvx", "args": ["--from", "git+https://github.com/BSMArt-HEP/hep-index.git@v0.4.0",
                              "hep-index", "serve"]
 }}}
 ```
@@ -85,8 +85,7 @@ Dev alternative (runs the live checkout): `"command": "uv", "args": ["run",
 | `fetch_codebase(name, version?)` | agent may fetch a **catalog** package (curated URLs only) |
 
 Without MCP (shell-only agents, scripts, skills), the same read-only tools run
-from the CLI and print JSON (requires v0.4.0+, currently on the
-`feat/query-pyast-local` branch):
+from the CLI and print JSON (requires v0.4.0+):
 
 ```bash
 hep-index query                                    # list tools + signatures
@@ -119,8 +118,7 @@ src/hep_index/data/catalog.toml      # curated source pins (shareable data)
 Env overrides: `HEP_INDEX_CONFIG`, `HEP_INDEX_CACHE`, `HEP_INDEX_CATALOG`,
 `HEP_INDEX_ROOT` (fetch destination, default `~/hep-codebases`).
 
-### Project-local mode (`--local`) (requires v0.4.0+, currently on the
-`feat/query-pyast-local` branch)
+### Project-local mode (`--local`) (requires v0.4.0+)
 
 For self-contained working directories (scan projects, cold-start workspaces):
 
@@ -219,6 +217,6 @@ packages referenced in the catalog are the work of their respective authors and
 are only pinned, never redistributed.
 ## License
 
-MIT — Copyright (c) 2026 Miguel Crispim Romão. Catalog entries pin upstream
+MIT — Copyright (c) 2026 Miguel Crispim Romão, Mark Goodsell. Catalog entries pin upstream
 software by other authors; their licenses apply to their code, which is never
 redistributed here.
