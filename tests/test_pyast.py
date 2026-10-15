@@ -225,3 +225,24 @@ def test_calls_collected_with_local_resolution(tmp_path):
         ("pkg.m.S.run", "S", "pkg.m.S"),
         ("pkg.m.S.run", "f", ""),                          # f()() outer: computed
     }
+
+
+def test_staticmethod_first_arg_not_receiver(tmp_path):
+    write(tmp_path, "pkg/__init__.py", "")
+    rel = write(tmp_path, "pkg/m.py",
+                "class C:\n"
+                "    @staticmethod\n"
+                "    def build(other):\n"
+                "        other.save()\n")
+    calls = {(c.caller, c.callee, c.target)
+             for c in extract_file(tmp_path, rel).calls}
+    assert calls == {("pkg.m.C.build", "other.save", "")}
+
+
+def test_module_end_line_counts_lines(tmp_path):
+    write(tmp_path, "pkg/__init__.py", "")
+    trailing = extract_file(tmp_path, write(tmp_path, "pkg/m.py",
+                                            "def f():\n    pass\n"))
+    assert rows_by_qual(trailing)["pkg.m"].end_line == 2
+    no_trailing = extract_file(tmp_path, write(tmp_path, "pkg/n.py", "x = 1"))
+    assert rows_by_qual(no_trailing)["pkg.n"].end_line == 1

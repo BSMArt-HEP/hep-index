@@ -22,8 +22,7 @@ flattened into key paths with value types and samples.
 
 ## Install (consumers)
 
-Zero-install, straight from the git remote (pin a tag for reproducibility — SSH
-key required for private repos):
+Zero-install, straight from the git remote (pin a tag for reproducibility):
 
 ```bash
 # one-shot use
@@ -86,7 +85,8 @@ Dev alternative (runs the live checkout): `"command": "uv", "args": ["run",
 | `fetch_codebase(name, version?)` | agent may fetch a **catalog** package (curated URLs only) |
 
 Without MCP (shell-only agents, scripts, skills), the same read-only tools run
-from the CLI and print JSON:
+from the CLI and print JSON (requires v0.4.0+, currently on the
+`feat/query-pyast-local` branch):
 
 ```bash
 hep-index query                                    # list tools + signatures
@@ -119,7 +119,8 @@ src/hep_index/data/catalog.toml      # curated source pins (shareable data)
 Env overrides: `HEP_INDEX_CONFIG`, `HEP_INDEX_CACHE`, `HEP_INDEX_CATALOG`,
 `HEP_INDEX_ROOT` (fetch destination, default `~/hep-codebases`).
 
-### Project-local mode (`--local`)
+### Project-local mode (`--local`) (requires v0.4.0+, currently on the
+`feat/query-pyast-local` branch)
 
 For self-contained working directories (scan projects, cold-start workspaces):
 
@@ -128,10 +129,10 @@ hep-index --local add ./vendor/mytool --name mytool --version 1.0
 hep-index --local query outline mytool
 ```
 
-All state lives under `./.hep-index/{codebases.toml,cache}` in the cwd; the
-global registry and cache are never read or written. Explicit flag only (no
-auto-detection), overrides any `HEP_INDEX_CONFIG`/`HEP_INDEX_CACHE` env vars,
-and must precede the subcommand. Ideal for indexing a scan directory's own
+All state lives under `./.hep-index/{codebases.toml,cache,src}` in the cwd
+(`fetch` checkouts land under `src/`); the global registry and cache are never
+read or written. Explicit flag only (no auto-detection), overrides any
+`HEP_INDEX_CONFIG`/`HEP_INDEX_CACHE` env vars, and must precede the subcommand. Ideal for indexing a scan directory's own
 installed HEP tools without polluting the machine-global registry.
 
 Catalog = **pins-as-data**: canonical upstream URLs, known-good versions, and
@@ -200,7 +201,7 @@ scratch, version is latest-LAST stable, notes name the hosting gotcha, and
 ```bash
 git clone git@github.com:BSMArt-HEP/hep-index.git && cd hep-index
 uv sync
-uv run pytest        # 91 tests, offline (file:// fixtures)
+uv run pytest        # 120 tests, offline (file:// fixtures)
 uv run hep-index …   # CLI from the live checkout
 ```
 

@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from hep_index import registry
+from hep_index import registry, server
 from hep_index.recipes import RECIPES
 from hep_index.server import (create_mcp_server, fetch_codebase_impl,
                               find_symbol_impl, index_codebase_impl,
@@ -225,6 +225,14 @@ def test_search_max_results(two_codebases):
 def test_search_bad_regex_raises(two_codebases):
     with pytest.raises(ValueError):
         search_code_impl("[")
+
+
+def test_search_query_never_parsed_as_rg_options(two_codebases):
+    # an rg-looking query is a regex, not an option: no raise, and no pattern
+    # file is read (the -e form pins it as the pattern)
+    assert search_code_impl("--hostname-bin=/bin/true") == []
+    assert search_code_impl("-f/etc/hostname") == []
+    assert search_code_impl("-f/no/such/pattern/file") == []
 
 
 # ------------------------------------------------------------------ find_symbol
@@ -598,6 +606,27 @@ def test_find_symbol_dotted(pypkg):
     assert "'Merge Results': 'Boolean'" in meta["value"]
 
 
+def test_dotted_lookup_star_import_cycle_terminates(env, monkeypatch):
+    # Six star-imports that each star-import back: the re-export walk revisits
+    # pkg.no_such_name along every path, and the depth cap bounds the rest.
+    src = env / "starpkg"
+    (src / "pkg").mkdir(parents=True)
+    mods = [f"m{i}" for i in range(6)]
+    (src / "pkg" / "__init__.py").write_text(
+        "".join(f"from .{m} import *\n" for m in mods))
+    for m in mods:
+        (src / "pkg" / f"{m}.py").write_text("from pkg import *\n")
+    index_codebase_impl(str(src), "star", "1.0")
+    lookups: list[str] = []
+    real = server._api_by_qualname
+    monkeypatch.setattr(server, "_api_by_qualname",
+                        lambda con, q, kind=None: (lookups.append(q),
+                                                   real(con, q, kind))[1])
+    assert find_symbol_impl("pkg.no_such_name", codebase="star") == []
+    # bounded by the depth-6 cap (6^6 paths), not unbounded recursion
+    assert len(lookups) < 6 ** 7
+
+
 def test_outline_package(pypkg):
     [o] = outline_impl("pkg", codebase="pypkg")
     assert o["kind"] == "module"
@@ -740,6 +769,18 @@ def test_read_file_falls_back_to_index_without_checkout(pypkg):
         read_file_impl("src/pkg/core.py")            # source is not stored
 
 
+def test_stored_file_symlink_escape_serves_nothing(env, tmp_path):
+    outside = tmp_path / "outside.json"
+    outside.write_text('{"Setup": {"Points": 4}}')
+    src = env / "linkpkg"
+    src.mkdir()
+    (src / "real.py").write_text("def f():\n    pass\n")
+    (src / "leak.json").symlink_to(outside)
+    index_codebase_impl(str(src), "link", "1.0")
+    with pytest.raises((FileNotFoundError, ValueError)):
+        read_file_impl("leak.json")   # symlink resolves outside every root
+
+
 CALLS_FILES = {
     "src/app/__init__.py": "from .runner import Runner\n",
     "src/app/runner.py": (
@@ -806,3 +847,16 @@ def test_call_graph_callers(callpkg):
         call_graph_impl("nope", codebase="callpkg")
     with pytest.raises(ValueError):
         call_graph_impl("run", direction="sideways")
+
+
+def test_call_graph_negative_max_results_clamped(env):
+    # LIMIT -1 means "unlimited" in sqlite; a negative max must fall back to 50
+    src = env / "callmany"
+    src.mkdir()
+    (src / "m.py").write_text(
+        "".join(f"def f{i}():\n    target()\n" for i in range(60))
+        + "def target():\n    pass\n")
+    index_codebase_impl(str(src), "callmany", "1.0")
+    [res] = call_graph_impl("target", codebase="callmany",
+                            direction="callers", max_results=-1)
+    assert 0 < len(res["called_by"]) <= 50

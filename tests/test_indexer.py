@@ -1,5 +1,6 @@
 """Tests for the indexer module (real Universal Ctags, no network)."""
 import json
+import os
 import sqlite3
 import subprocess
 from pathlib import Path
@@ -176,3 +177,16 @@ def test_ctags_skips_data_languages(env):
     langs = {r[0] for r in con.execute("SELECT DISTINCT language FROM symbols")}
     con.close()
     assert langs == {"C++"}
+
+
+def test_walk_skips_non_regular_files(env, tmp_path):
+    root = tmp_path / "fifo_tree"
+    root.mkdir()
+    (root / "ok.py").write_text("def f():\n    pass\n")
+    os.mkfifo(root / "config.json")   # reading it would block forever
+    entry = CodebaseEntry(name="f", version="1", path=str(root))
+    build_index(entry)
+    con = _db(entry)
+    files = {r[0] for r in con.execute("SELECT path FROM files")}
+    con.close()
+    assert files == {"ok.py"}

@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 import sqlite3
+import stat
 import subprocess
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -65,8 +66,14 @@ def _walk_files(root: Path, patterns: list[str]):
             rel = os.path.normpath(os.path.join(rel_dir, fname))
             if _is_excluded(rel, fname, patterns):
                 continue
+            abs_path = Path(dirpath) / fname
+            try:  # FIFOs/special files would block read_text/stat
+                if not stat.S_ISREG(abs_path.stat().st_mode):
+                    continue
+            except OSError:
+                continue
             found.append((PurePosixPath(Path(rel).as_posix()).as_posix(),
-                          Path(dirpath) / fname))
+                          abs_path))
     return found
 
 

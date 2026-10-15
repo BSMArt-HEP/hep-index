@@ -461,7 +461,9 @@ def _collect_calls(fn, caller: str, cls_qual: str | None, local: dict[str, str],
     """Every call in fn's body (nested defs/lambdas attributed to fn)."""
     pos = list(fn.args.posonlyargs) + list(fn.args.args) \
         if hasattr(fn, "args") else []
-    me = pos[0].arg if (cls_qual and pos) else None
+    static = any(_short(d) == "staticmethod"
+                 for d in getattr(fn, "decorator_list", []))
+    me = pos[0].arg if (cls_qual and pos and not static) else None
     seen: set[tuple[str, int]] = set()
     body = fn.body if isinstance(fn.body, list) else [fn.body]
     walk = _walk_no_defs if isinstance(fn, ast.Module) else ast.walk
@@ -538,7 +540,7 @@ def extract_file(root: Path, rel: str) -> PyFileInfo | None:
                     path=rel, line=st.lineno, end_line=st.end_lineno or st.lineno,
                     parent=mod, signature=sig, doc="", value=value))
 
-    n_lines = src.count(b"\n") + 1
+    n_lines = len(src.splitlines()) or 1
     rows.insert(0, PyApiRow(
         qualname=mod, name=mod.rsplit(".", 1)[-1], kind="module", path=rel,
         line=1, end_line=n_lines, parent=mod.rsplit(".", 1)[0] if "." in mod else "",

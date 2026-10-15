@@ -10,6 +10,7 @@ import inspect
 import json
 import os
 import shutil
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -135,7 +136,9 @@ def _cmd_fetch(args: argparse.Namespace) -> int:
 
 
 def _query_value(text: str):
-    """JSON when it parses (numbers, true/false/null, lists), else the string."""
+    """JSON, Python True/False/None, else the string unchanged."""
+    if text in ("True", "False", "None"):
+        return {"True": True, "False": False, "None": None}[text]
     try:
         return json.loads(text)
     except ValueError:
@@ -176,7 +179,9 @@ def _cmd_query(args: argparse.Namespace) -> int:
     positional = []
     for a in args.args:
         key, eq, val = a.partition("=")
-        if eq and key in params:
+        if eq:
+            if key not in params:
+                raise ValueError(f"unknown parameter {key!r} for {args.tool}")
             kwargs[key] = _query_value(val)
         else:
             positional.append(a)  # positional values stay strings
@@ -185,7 +190,13 @@ def _cmd_query(args: argparse.Namespace) -> int:
         raise ValueError(f"too many positional arguments for {args.tool}; "
                          f"parameters: {', '.join(params)}")
     kwargs.update(zip(free, positional))
-    print(json.dumps(fn(**kwargs), indent=1, ensure_ascii=False))
+    try:
+        result = fn(**kwargs)
+    except TypeError as exc:
+        raise ValueError(f"invalid arguments for {args.tool}: {exc}") from exc
+    except sqlite3.Error as exc:
+        raise ValueError(f"{args.tool} failed: {exc}") from exc
+    print(json.dumps(result, indent=1, ensure_ascii=False))
     return 0
 
 
@@ -265,11 +276,23 @@ def main(argv: list[str] | None = None) -> int:
                 pass
             return 0
         args = _build_parser().parse_args(argv)
+        saved: dict[str, str | None] = {}
         if args.local:  # explicit project-local mode (CONTRACT.md §local)
             local_root = Path.cwd() / ".hep-index"
-            os.environ["HEP_INDEX_CONFIG"] = str(local_root / "codebases.toml")
-            os.environ["HEP_INDEX_CACHE"] = str(local_root / "cache")
-        return args.func(args)
+            for var, value in (
+                    ("HEP_INDEX_CONFIG", str(local_root / "codebases.toml")),
+                    ("HEP_INDEX_CACHE", str(local_root / "cache")),
+                    ("HEP_INDEX_ROOT", str(local_root / "src"))):
+                saved[var] = os.environ.get(var)
+                os.environ[var] = value
+        try:
+            return args.func(args)
+        finally:
+            for var, old in saved.items():
+                if old is None:
+                    os.environ.pop(var, None)
+                else:
+                    os.environ[var] = old
     except (_UsageError, ValueError, FileNotFoundError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

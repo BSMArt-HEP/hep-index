@@ -1,12 +1,13 @@
 """Tests for the CLI (real ctags, no network; see CONTRACT.md §cli)."""
 import json
+import os
 import subprocess
 import sqlite3
 
 import pytest
 
 from hep_index import registry
-from hep_index.cli import main
+from hep_index.cli import _query_value, main
 from hep_index.recipes import RECIPES
 from hep_index.registry import index_dir
 from hep_index.server import list_codebases_impl
@@ -292,3 +293,63 @@ def test_local_mode_resolution_and_isolation(tmp_path, monkeypatch, capsys):
     # isolation of the global cache: unchanged
     assert gcache.stat().st_mtime_ns == gcache_before
     assert list(gcache.iterdir()) == []
+
+
+def test_query_value_python_literals():
+    assert _query_value("True") is True
+    assert _query_value("False") is False
+    assert _query_value("None") is None
+    assert _query_value("true") is True      # JSON spellings still work
+    assert _query_value("null") is None
+    assert _query_value("Setup") == "Setup"
+
+
+def test_query_unknown_param_exits_1(env, root, capsys):
+    assert _add(root) == 0
+    capsys.readouterr()
+    assert main(["query", "data_files", "globs=*.py"]) == 1
+    assert "error: unknown parameter 'globs'" in capsys.readouterr().err
+
+
+def test_query_bad_type_is_clean_error(env, root, capsys):
+    assert _add(root) == 0
+    capsys.readouterr()
+    assert main(["query", "read_file", "path=5"]) == 1
+    cap = capsys.readouterr()
+    assert cap.err.startswith("error:")
+    assert "Traceback" not in cap.err and "Traceback" not in cap.out
+
+
+def test_query_python_bool_literal(env, tmp_path, capsys):
+    src = tmp_path / "cfgsrc"
+    src.mkdir()
+    (src / "cfg.py").write_text("def load(cfg):\n"
+                                "    return cfg['Setup']['Points']\n")
+    (src / "ex.json").write_text('{"Setup": {"Points": 4}}')
+    assert main(["add", str(src), "--name", "cfg", "--version", "1"]) == 0
+    capsys.readouterr()
+    assert main(["query", "config_keys", "base=cfg", "codebase=cfg"]) == 0
+    assert any("data" in r for r in json.loads(capsys.readouterr().out))
+    assert main(["query", "config_keys", "base=cfg", "codebase=cfg",
+                 "include_data=False"]) == 0
+    assert all("data" not in r for r in json.loads(capsys.readouterr().out))
+
+
+def test_local_fetch_keeps_src_root(env, tmp_path, capsys, monkeypatch):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "mod.py").write_text("def hello():\n    return 42\n")
+    subprocess.run(["git", "init", "-q"], cwd=src, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=src, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-qm", "x"], cwd=src, check=True)
+    subprocess.run(["git", "tag", "v1.0"], cwd=src, check=True)
+    monkeypatch.setenv("HEP_INDEX_CATALOG", str(_fixture_catalog(tmp_path, src)))
+    monkeypatch.setenv("HEP_INDEX_ROOT", "sentinel")
+    work = tmp_path / "scan"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    assert main(["--local", "fetch", "fixture"]) == 0
+    assert (work / ".hep-index" / "src" / "fixture-v1.0" / "mod.py").exists()
+    assert (work / ".hep-index" / "codebases.toml").is_file()
+    assert os.environ["HEP_INDEX_ROOT"] == "sentinel"   # restored in finally

@@ -89,7 +89,8 @@ Behavior:
   populates py_api/py_modules/py_imports. Unparseable files keep ctags rows.
   The ast pass runs even when ctags is missing.
 - Insert rows sorted (deterministic). Language for files table: suffix map
-  (.py→Python, .cpp/.h/.cc/.hpp→C++, .f90/.f→Fortran, .m→Mathematica, else "").
+  (.py→Python, .cpp/.h/.cc/.hpp→C++, .f90/.f→Fortran, .m→Mathematica,
+  .json→JSON, .yaml/.yml→YAML, .toml→TOML, else "").
 
 ### server.py — `create_mcp_server() -> FastMCP` + plain impl functions
 
@@ -327,6 +328,9 @@ Explicit project-local mode, implemented ONCE in `cli.main()` right after
 argument parsing (no cwd auto-detection anywhere else):
 - sets (in-process) `HEP_INDEX_CONFIG=<cwd>/.hep-index/codebases.toml` and
   `HEP_INDEX_CACHE=<cwd>/.hep-index/cache`, overriding any ambient values;
+- also sets `HEP_INDEX_ROOT=<cwd>/.hep-index/src`, so `--local fetch` clones
+  under the project too, and restores the three prior values (or their unset
+  state) after the subcommand returns;
 - in local mode NOTHING may read or write `~/.config/hep-index` or
   `~/.cache/hep-index`;
 - all modules keep resolving paths via the existing env-var mechanisms — there

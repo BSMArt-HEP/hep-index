@@ -126,9 +126,9 @@ def extract_data_file(root: Path, rel: str, size: int) -> DataFileInfo | None:
     try:
         text = (root / rel).read_text(encoding="utf-8")
         data = _load(fmt, text)
+        keys, truncated = flatten(data)  # recursive yaml anchors can recurse
     except Exception:  # unparseable / not utf-8 / yaml tags etc.
         return None
-    keys, truncated = flatten(data)
     return DataFileInfo(
         path=rel, format=fmt, size=size,
         content=text if size <= MAX_STORE_BYTES else None,

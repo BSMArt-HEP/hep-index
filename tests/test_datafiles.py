@@ -53,3 +53,9 @@ def test_extract_formats_and_storage(tmp_path, monkeypatch):
     assert info.content is None and info.keys
     monkeypatch.setattr(datafiles, "MAX_PARSE_BYTES", 5)
     assert extract_data_file(tmp_path, "a.json", 25) is None
+
+
+def test_extract_yaml_alias_cycle_returns_none(tmp_path):
+    p = tmp_path / "cyc.yaml"
+    p.write_text("a: &x\n  b: *x\n")
+    assert extract_data_file(tmp_path, "cyc.yaml", p.stat().st_size) is None

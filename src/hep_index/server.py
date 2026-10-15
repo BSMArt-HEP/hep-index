@@ -74,9 +74,8 @@ def search_code_impl(query: str, codebase: str | None = None,
         root = Path(e.path)
         if not root.is_dir():
             continue  # missing checkout: skip, don't fail the whole call
-        cmd = ["rg", "--no-heading", "-n", "--max-count", "5", query, str(root)]
-        if glob:
-            cmd += ["-g", glob]
+        cmd = (["rg", "--no-heading", "-n", "--max-count", "5", "-e", query]
+               + (["-g", glob] if glob else []) + ["--", str(root)])
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         if proc.returncode not in (0, 1):  # 1 = no hits, 2 = bad regex/usage
             raise ValueError(f"rg failed on {e.id}: {proc.stderr.strip()}")
@@ -179,10 +178,15 @@ def _api_by_qualname(con, qualname: str, kind: str | None = None) -> list:
 
 
 def _resolve_dotted(con, dotted: str, kind: str | None = None,
-                    depth: int = 0) -> list:
+                    depth: int = 0, seen: set[str] | None = None) -> list:
     """Exact qualname, else follow imports/re-exports (pkg.Name -> pkg.core.Name)."""
+    if seen is None:
+        seen = set()
+    if dotted in seen or depth > 6:  # seen breaks re-export cycles
+        return []
+    seen = seen | {dotted}
     rows = _api_by_qualname(con, dotted, kind)
-    if rows or depth > 6:
+    if rows:
         return rows
     parts = dotted.split(".")
     for i in range(len(parts) - 1, 0, -1):
@@ -191,11 +195,11 @@ def _resolve_dotted(con, dotted: str, kind: str | None = None,
                           " AND name = ?", (mod, local)).fetchone()
         if imp and imp["target"] != dotted:
             return _resolve_dotted(con, ".".join([imp["target"], *rest]),
-                                   kind, depth + 1)
+                                   kind, depth + 1, seen)
         for star in con.execute("SELECT target FROM py_imports WHERE module = ?"
                                 " AND name = '*'", (mod,)).fetchall():
             hit = _resolve_dotted(con, ".".join([star["target"], local, *rest]),
-                                  kind, depth + 1)
+                                  kind, depth + 1, seen)
             if hit:
                 return hit
     return []
@@ -635,6 +639,8 @@ def call_graph_impl(name: str, codebase: str | None = None,
     """Static callees / callers of a Python function, method or class."""
     if direction not in ("both", "calls", "callers"):
         raise ValueError("direction must be 'both', 'calls' or 'callers'")
+    if max_results < 0:  # a negative LIMIT means unlimited in sqlite
+        max_results = 50
     out: list[dict] = []
     for e in registry.resolve(codebase):
         root = Path(e.path)
@@ -723,7 +729,9 @@ def _stored_file(path: str) -> tuple[registry.CodebaseEntry, str, str] | None:
         finally:
             con.close()
         if r is not None:
-            return e, rel, r["content"]
+            root = Path(e.path).resolve()
+            if (root / rel).resolve().is_relative_to(root):
+                return e, rel, r["content"]
     return None
 
 
