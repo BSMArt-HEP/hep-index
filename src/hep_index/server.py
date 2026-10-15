@@ -177,29 +177,47 @@ def _api_by_qualname(con, qualname: str, kind: str | None = None) -> list:
                        [qualname] + ([kind] if kind else [])).fetchall()
 
 
+_RESOLVE_BUDGET = 20000  # SQL lookups per resolution; running out = unresolved
+
+
 def _resolve_dotted(con, dotted: str, kind: str | None = None,
-                    depth: int = 0, seen: set[str] | None = None) -> list:
-    """Exact qualname, else follow imports/re-exports (pkg.Name -> pkg.core.Name)."""
+                    depth: int = 0, seen: set[str] | None = None,
+                    budget: list[int] | None = None) -> list:
+    """Exact qualname, else follow imports/re-exports (pkg.Name -> pkg.core.Name).
+
+    Work is bounded: every SQL lookup draws from `budget`, a one-cell counter
+    shared across the whole resolution. An exhausted budget unwinds as [] (a
+    plain 'could not resolve'), never an exception.
+    """
     if seen is None:
         seen = set()
-    if dotted in seen or depth > 6:  # seen breaks re-export cycles
+    if budget is None:
+        budget = [_RESOLVE_BUDGET]
+    if dotted in seen or depth > 6 or budget[0] <= 0:  # seen breaks re-export cycles
         return []
     seen = seen | {dotted}
+    budget[0] -= 1
     rows = _api_by_qualname(con, dotted, kind)
     if rows:
         return rows
     parts = dotted.split(".")
     for i in range(len(parts) - 1, 0, -1):
         mod, local, rest = ".".join(parts[:i]), parts[i], parts[i + 1:]
+        if budget[0] <= 0:
+            return []
+        budget[0] -= 1
         imp = con.execute("SELECT target FROM py_imports WHERE module = ?"
                           " AND name = ?", (mod, local)).fetchone()
         if imp and imp["target"] != dotted:
             return _resolve_dotted(con, ".".join([imp["target"], *rest]),
-                                   kind, depth + 1, seen)
+                                   kind, depth + 1, seen, budget)
+        if budget[0] <= 0:
+            return []
+        budget[0] -= 1
         for star in con.execute("SELECT target FROM py_imports WHERE module = ?"
                                 " AND name = '*'", (mod,)).fetchall():
             hit = _resolve_dotted(con, ".".join([star["target"], local, *rest]),
-                                  kind, depth + 1, seen)
+                                  kind, depth + 1, seen, budget)
             if hit:
                 return hit
     return []
@@ -228,7 +246,7 @@ def _dotted_symbols(entry, root: Path, name: str, kind: str | None,
     if con is None:
         return None
     try:
-        rows = _resolve_dotted(con, name, kind)
+        rows = _resolve_dotted(con, name, kind, budget=[_RESOLVE_BUDGET])
         if not rows:  # suffix match: "MCMC.NewScan" -> bsmart.scans.MCMC.NewScan
             kfilter = " AND kind = ?" if kind else ""
             rows = con.execute(
@@ -320,7 +338,8 @@ def _subclasses(con, qualname: str, name: str, limit: int = 100) -> list[dict]:
 
 def _outline_one(entry, root: Path, con, target: str, include_private: bool,
                  max_members: int) -> dict | None:
-    rows = _resolve_dotted(con, target)
+    budget = [_RESOLVE_BUDGET]  # shared across every resolution in this outline
+    rows = _resolve_dotted(con, target, budget=budget)
     rows = [r for r in rows if r["kind"] in ("module", "class")] or rows
     if not rows:  # a file path relative to the root
         mod = con.execute("SELECT module FROM py_modules WHERE path = ?",
@@ -396,7 +415,7 @@ def _outline_one(entry, root: Path, con, target: str, include_private: bool,
                 continue
             if all_names is None and not r["path"].endswith("__init__.py"):
                 continue  # plain module imports are dependencies, not API
-            tgt = _resolve_dotted(con, imp["target"])
+            tgt = _resolve_dotted(con, imp["target"], budget=budget)
             reexports.append({"name": imp["name"], "target": imp["target"],
                               **({"kind": tgt[0]["kind"],
                                   "signature": tgt[0]["signature"],
@@ -490,6 +509,8 @@ def config_keys_impl(base: str | None = None, codebase: str | None = None,
     data_prefix mounts the code keys of `base` under a data key path, for a
     dict handed across calls (bsmart: tool `settings` = inputs["Codes"][name]).
     """
+    if max_results < 0:  # a negative LIMIT means unlimited in sqlite
+        max_results = 200
     want = [k for k in prefix.split("/") if k] if prefix else []
     mount = [k for k in data_prefix.split("/") if k] if data_prefix else []
     if base is not None:
@@ -651,7 +672,7 @@ def call_graph_impl(name: str, codebase: str | None = None,
             if not _has_table(con, "py_calls"):
                 continue
             if "." in name:
-                rows = _resolve_dotted(con, name)
+                rows = _resolve_dotted(con, name, budget=[_RESOLVE_BUDGET])
                 if not rows:
                     rows = con.execute(
                         f"SELECT {_API_COLS} FROM py_api WHERE qualname LIKE ?"

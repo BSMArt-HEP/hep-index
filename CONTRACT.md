@@ -126,6 +126,7 @@ def read_file_impl(path: str, offset: int = 1, limit: int = 200) -> dict
   (exact, following py_imports re-exports, then `%.name` suffix).
   Fallback when index.db missing or n_symbols == 0: rg word search
   `\b<name>\b` and return hits as `{codebase, path (absolute), line_no, text}`.
+- `_resolve_dotted` work is bounded by a 20k-query budget; exhaustion = unresolved.
 - `outline_impl(target, codebase=None, include_private=False, max_members=200)`
   → list (one per codebase with a match) of `{codebase, qualname, kind, path,
   line, signature, doc, members[...]}` + modules: `imports`, `__all__`,

@@ -12,6 +12,7 @@ import os
 import shutil
 import sqlite3
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -627,6 +628,43 @@ def test_dotted_lookup_star_import_cycle_terminates(env, monkeypatch):
     assert len(lookups) < 6 ** 7
 
 
+def test_dotted_lookup_star_import_budget_bounds_work(env, monkeypatch):
+    # Dense star re-export graph (each of 12 modules re-exports every other):
+    # the depth-6 cap alone allows a huge simple-path blow-up, so unbudgeted
+    # this fixture runs for minutes. The 20k-query budget must cap the walk.
+    src = env / "starwide"
+    (src / "pkg").mkdir(parents=True)
+    mods = [f"m{i}" for i in range(12)]
+    (src / "pkg" / "__init__.py").write_text(
+        "".join(f"from .{m} import *\n" for m in mods))
+    for m in mods:
+        (src / "pkg" / f"{m}.py").write_text(
+            "".join(f"from .{o} import *\n" for o in mods if o != m))
+    index_codebase_impl(str(src), "starwide", "1.0")
+    lookups: list[str] = []
+    real = server._api_by_qualname
+    monkeypatch.setattr(server, "_api_by_qualname",
+                        lambda con, q, kind=None: (lookups.append(q),
+                                                   real(con, q, kind))[1])
+    start = time.monotonic()
+    assert find_symbol_impl("pkg.nope", codebase="starwide") == []
+    assert len(lookups) <= server._RESOLVE_BUDGET  # lookup budget caps the walk
+    assert time.monotonic() - start < 5.0          # generous, not a clock test
+
+
+def test_dotted_lookup_star_import_chain_resolves(env):
+    # A 3-hop `from .x import *` re-export chain still resolves the symbol.
+    src = env / "starchain"
+    (src / "pkg").mkdir(parents=True)
+    (src / "pkg" / "__init__.py").write_text("from .a import *\n")
+    (src / "pkg" / "a.py").write_text("from .b import *\n")
+    (src / "pkg" / "b.py").write_text("from .c import *\n")
+    (src / "pkg" / "c.py").write_text("def target():\n    pass\n")
+    index_codebase_impl(str(src), "starchain", "1.0")
+    [hit] = find_symbol_impl("pkg.target", codebase="starchain")
+    assert hit["qualname"] == "pkg.c.target"
+
+
 def test_outline_package(pypkg):
     [o] = outline_impl("pkg", codebase="pypkg")
     assert o["kind"] == "module"
@@ -860,3 +898,17 @@ def test_call_graph_negative_max_results_clamped(env):
     [res] = call_graph_impl("target", codebase="callmany",
                             direction="callers", max_results=-1)
     assert 0 < len(res["called_by"]) <= 50
+
+
+def test_config_keys_negative_max_results_clamped(env, pypkg):
+    # LIMIT -1 means "unlimited" in sqlite; a negative max must fall back to 200
+    src = env / "manykeys"
+    src.mkdir()
+    (src / "m.py").write_text(
+        "".join(f'cfg{i}["K"] = {i}\n' for i in range(250)))
+    index_codebase_impl(str(src), "manykeys", "1.0")
+    keys = config_keys_impl(codebase="manykeys", max_results=-1)
+    assert 0 < len(keys) <= 200
+    # data_files caps in Python (no SQL LIMIT), so -1 is already bounded
+    files = data_files_impl(codebase="pypkg", max_results=-1)
+    assert 0 < len(files) <= 100
