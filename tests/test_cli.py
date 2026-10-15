@@ -257,3 +257,38 @@ def test_query_tools(env, tmp_path, capsys):
     assert main(["query", "nope"]) == 1
     assert main(["query", "outline", "pkg.nope"]) == 2       # KeyError
     assert main(["query", "outline", "a", "b", "c", "d", "e"]) == 1
+
+
+# ------------------------------------------------------------- v0.4: --local mode
+
+def test_local_mode_resolution_and_isolation(tmp_path, monkeypatch, capsys):
+    import time
+    src = tmp_path / "tool"
+    (src / "pkg").mkdir(parents=True)
+    (src / "pkg" / "mod.py").write_text("def hello():\n    return 42\n")
+    # simulate a populated GLOBAL state that must remain untouched
+    gcfg, gcache = tmp_path / "g.toml", tmp_path / "gcache"
+    gcfg.write_text("[codebase]\nname='keep'\nversion='1'\npath='/nonexistent'\n")
+    gcache.mkdir()
+    gcfg_before, gcache_before = gcfg.read_text(), gcache.stat().st_mtime_ns
+    monkeypatch.setenv("HEP_INDEX_CONFIG", str(gcfg))
+    monkeypatch.setenv("HEP_INDEX_CACHE", str(gcache))
+    work = tmp_path / "scan"
+    work.mkdir()
+    monkeypatch.chdir(work)
+
+    rc = main(["--local", "add", str(src), "--name", "tool", "--version", "1.0"])
+    assert rc == 0
+    assert (work / ".hep-index" / "codebases.toml").is_file()
+    assert (work / ".hep-index" / "cache" / "tool-1.0").is_dir()
+    # global registry content untouched; no new entries landed there
+    assert gcfg.read_text() == gcfg_before
+    assert "tool" not in gcfg.read_text()
+    time.sleep(2)  # mtime granularity
+    rc = main(["--local", "query", "find_symbol", "hello", "codebase=tool"])
+    assert rc == 0 and "mod.py" in capsys.readouterr().out
+    rc = main(["--local", "list"])
+    assert "tool@1.0" in capsys.readouterr().out
+    # isolation of the global cache: unchanged
+    assert gcache.stat().st_mtime_ns == gcache_before
+    assert list(gcache.iterdir()) == []

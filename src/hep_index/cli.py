@@ -197,6 +197,10 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 def _build_parser() -> _Parser:
     parser = _Parser(prog="hep-index",
                      description="Multi-codebase index for HEP software")
+    parser.add_argument("--local", action="store_true",
+                        help="project-local mode: registry and index cache live "
+                             "under ./.hep-index/ (cwd); global paths are never "
+                             "read or written. Overrides HEP_INDEX_CONFIG/CACHE.")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("add", help="register a codebase and build its index")
@@ -261,6 +265,10 @@ def main(argv: list[str] | None = None) -> int:
                 pass
             return 0
         args = _build_parser().parse_args(argv)
+        if args.local:  # explicit project-local mode (CONTRACT.md §local)
+            local_root = Path.cwd() / ".hep-index"
+            os.environ["HEP_INDEX_CONFIG"] = str(local_root / "codebases.toml")
+            os.environ["HEP_INDEX_CACHE"] = str(local_root / "cache")
         return args.func(args)
     except (_UsageError, ValueError, FileNotFoundError) as exc:
         print(f"error: {exc}", file=sys.stderr)

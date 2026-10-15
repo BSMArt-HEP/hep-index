@@ -27,10 +27,10 @@ key required for private repos):
 
 ```bash
 # one-shot use
-uvx --from git+ssh://git@github.com/BSMArt-HEP/hep-index.git@v0.3.0 hep-index list
+uvx --from git+https://github.com/BSMArt-HEP/hep-index.git@v0.3.0 hep-index list
 
 # or install persistently (isolated venv, `hep-index` on PATH)
-uv tool install git+ssh://git@github.com/BSMArt-HEP/hep-index.git@v0.3.0
+uv tool install git+https://github.com/BSMArt-HEP/hep-index.git@v0.3.0
 hep-index list
 ```
 
@@ -62,7 +62,7 @@ zero-install via uvx, pinned tag:
 
 ```json
 {"mcpServers": {"hep-index": {
-  "command": "uvx", "args": ["--from", "git+ssh://git@github.com/BSMArt-HEP/hep-index.git@v0.3.0",
+  "command": "uvx", "args": ["--from", "git+https://github.com/BSMArt-HEP/hep-index.git@v0.3.0",
                              "hep-index", "serve"]
 }}}
 ```
@@ -118,6 +118,21 @@ src/hep_index/data/catalog.toml      # curated source pins (shareable data)
 
 Env overrides: `HEP_INDEX_CONFIG`, `HEP_INDEX_CACHE`, `HEP_INDEX_CATALOG`,
 `HEP_INDEX_ROOT` (fetch destination, default `~/hep-codebases`).
+
+### Project-local mode (`--local`)
+
+For self-contained working directories (scan projects, cold-start workspaces):
+
+```bash
+hep-index --local add ./vendor/mytool --name mytool --version 1.0
+hep-index --local query outline mytool
+```
+
+All state lives under `./.hep-index/{codebases.toml,cache}` in the cwd; the
+global registry and cache are never read or written. Explicit flag only (no
+auto-detection), overrides any `HEP_INDEX_CONFIG`/`HEP_INDEX_CACHE` env vars,
+and must precede the subcommand. Ideal for indexing a scan directory's own
+installed HEP tools without polluting the machine-global registry.
 
 Catalog = **pins-as-data**: canonical upstream URLs, known-good versions, and
 gotchas (dead tags, launchpad series-path quirks, Anubis walls) as commented

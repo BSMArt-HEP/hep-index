@@ -317,3 +317,19 @@ fetch_codebase e2e OFFLINE via HEP_INDEX_CATALOG pointing at a fixture catalog
   `registered: <id>, <id>, ... (see 'hep-index list')` (errors ignored, exit 0).
 Tests: catalog listing output; fetch via fixture catalog (file:// git fixture,
 monkeypatched envs + HEP_INDEX_ROOT); not-in-catalog exit 1; no-arg footer.
+
+---
+
+# v0.4 additions — local mode (maintainer)
+
+## §local — `hep-index --local <cmd>`
+Explicit project-local mode, implemented ONCE in `cli.main()` right after
+argument parsing (no cwd auto-detection anywhere else):
+- sets (in-process) `HEP_INDEX_CONFIG=<cwd>/.hep-index/codebases.toml` and
+  `HEP_INDEX_CACHE=<cwd>/.hep-index/cache`, overriding any ambient values;
+- in local mode NOTHING may read or write `~/.config/hep-index` or
+  `~/.cache/hep-index`;
+- all modules keep resolving paths via the existing env-var mechanisms — there
+  is no second resolution path.
+`--local` is a root-parser flag and must precede the subcommand. Default
+behaviour (no flag) is unchanged.
